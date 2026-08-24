@@ -4,8 +4,10 @@ import json
 import sqlite3
 
 from nanobar_api.bricks.schema import (
+    REVIEW_STATUSES,
     SCHEMA_SQL,
     TRIGGER_SQL,
+    BrickReviewStatus,
     MonitorTargetRef,
     Nanobar,
     NanobarBrickBinding,
@@ -172,6 +174,50 @@ def get_bricks_for_nanobar(conn: sqlite3.Connection, nanobar_id: str) -> list[Re
         (nanobar_id,),
     ).fetchall()
     return [_row_to_brick(row) for row in rows]
+
+
+def set_review_status(conn: sqlite3.Connection, regression_brick_id: str, status: str, updated_by: str) -> None:
+    if status not in REVIEW_STATUSES:
+        raise ValueError(f"invalid review status {status!r}, must be one of {REVIEW_STATUSES}")
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO regression_brick_review_status (regression_brick_id, status, updated_by)
+            VALUES (?, ?, ?)
+            ON CONFLICT(regression_brick_id) DO UPDATE SET
+                status = excluded.status,
+                updated_at = CURRENT_TIMESTAMP,
+                updated_by = excluded.updated_by
+            """,
+            (regression_brick_id, status, updated_by),
+        )
+
+
+def get_review_status(conn: sqlite3.Connection, regression_brick_id: str) -> BrickReviewStatus:
+    row = conn.execute(
+        "SELECT regression_brick_id, status, updated_by FROM regression_brick_review_status "
+        "WHERE regression_brick_id = ?",
+        (regression_brick_id,),
+    ).fetchone()
+    if row is None:
+        return BrickReviewStatus(regression_brick_id=regression_brick_id, status="new", updated_by="system")
+    return BrickReviewStatus(
+        regression_brick_id=row["regression_brick_id"], status=row["status"], updated_by=row["updated_by"]
+    )
+
+
+def list_bricks_by_review_status(conn: sqlite3.Connection, status: str | None = None) -> list[RegressionBrick]:
+    rows = conn.execute(
+        """
+        SELECT rb.*, COALESCE(rs.status, 'new') AS effective_status
+        FROM regression_bricks rb
+        LEFT JOIN regression_brick_review_status rs ON rs.regression_brick_id = rb.regression_brick_id
+        ORDER BY rb.created_at
+        """
+    ).fetchall()
+    if status is not None and status not in REVIEW_STATUSES:
+        raise ValueError(f"invalid review status {status!r}, must be one of {REVIEW_STATUSES}")
+    return [_row_to_brick(row) for row in rows if status is None or row["effective_status"] == status]
 
 
 def get_nanobars_for_brick(conn: sqlite3.Connection, regression_brick_id: str) -> list[Nanobar]:

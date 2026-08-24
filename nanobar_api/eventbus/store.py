@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Sequence
 
-from nanobar_api.eventbus.events import Event
+from nanobar_api.eventbus.events import Event, TraceSummary
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -115,3 +115,58 @@ def mark_processed(conn: sqlite3.Connection, event_ids: Sequence[str]) -> None:
             "UPDATE events SET processed_at = datetime('now') WHERE event_id = ?",
             [(event_id,) for event_id in event_ids],
         )
+
+
+def list_trace_ids(conn: sqlite3.Connection, channel: str, limit: int = 100) -> list[TraceSummary]:
+    rows = conn.execute(
+        """
+        SELECT
+            trace_id,
+            COUNT(*) AS span_count,
+            MIN(recorded_at_ns) AS first_recorded_at_ns,
+            MAX(recorded_at_ns) AS last_recorded_at_ns,
+            MAX(CASE WHEN json_extract(payload_json, '$.error') THEN 1 ELSE 0 END) AS any_error
+        FROM events
+        WHERE channel = ? AND trace_id IS NOT NULL
+        GROUP BY trace_id
+        ORDER BY last_recorded_at_ns DESC
+        LIMIT ?
+        """,
+        (channel, limit),
+    ).fetchall()
+    return [
+        TraceSummary(
+            trace_id=row[0],
+            span_count=row[1],
+            first_recorded_at_ns=row[2],
+            last_recorded_at_ns=row[3],
+            any_error=bool(row[4]),
+        )
+        for row in rows
+    ]
+
+
+def get_events_by_trace_id(conn: sqlite3.Connection, trace_id: str, channel: str | None = None) -> list[Event]:
+    query = (
+        "SELECT event_id, channel, trace_id, span_id, recorded_at_ns, monotonic_ns, payload_json "
+        "FROM events WHERE trace_id = ?"
+    )
+    params: list[str] = [trace_id]
+    if channel is not None:
+        query += " AND channel = ?"
+        params.append(channel)
+    query += " ORDER BY monotonic_ns"
+
+    rows = conn.execute(query, params).fetchall()
+    return [
+        Event(
+            event_id=row[0],
+            channel=row[1],
+            trace_id=row[2],
+            span_id=row[3],
+            recorded_at_ns=row[4],
+            monotonic_ns=row[5],
+            payload=json.loads(row[6]),
+        )
+        for row in rows
+    ]

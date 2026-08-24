@@ -7,18 +7,33 @@ from pathlib import Path
 import pytest
 
 from nanobar_api.eventbus.events import Event
-from nanobar_api.eventbus.store import connect, get_unprocessed, insert_events, mark_processed
+from nanobar_api.eventbus.store import (
+    connect,
+    get_events_by_trace_id,
+    get_unprocessed,
+    insert_events,
+    list_trace_ids,
+    mark_processed,
+)
 
 
-def _make_event(event_id: str, channel: str = "ch1") -> Event:
+def _make_event(
+    event_id: str,
+    channel: str = "ch1",
+    trace_id: str | None = "trace-1",
+    span_id: str = "span-1",
+    recorded_at_ns: int = 1_000,
+    monotonic_ns: int = 2_000,
+    payload: dict[str, object] | None = None,
+) -> Event:
     return Event(
         event_id=event_id,
         channel=channel,
-        recorded_at_ns=1_000,
-        monotonic_ns=2_000,
-        payload={"key": "value", "event_id": event_id},
-        trace_id="trace-1",
-        span_id="span-1",
+        recorded_at_ns=recorded_at_ns,
+        monotonic_ns=monotonic_ns,
+        payload=payload if payload is not None else {"key": "value", "event_id": event_id},
+        trace_id=trace_id,
+        span_id=span_id,
     )
 
 
@@ -167,5 +182,134 @@ def test_mark_processed_empty_list_is_noop(tmp_path: Path) -> None:
         mark_processed(conn, [])
 
         assert get_unprocessed(conn, "snapshot") != []
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_groups_by_trace_and_orders_by_recency(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-1a", "trace", trace_id="tr-1", recorded_at_ns=100),
+                _make_event("evt-1b", "trace", trace_id="tr-1", recorded_at_ns=200),
+                _make_event("evt-2a", "trace", trace_id="tr-2", recorded_at_ns=150),
+            ],
+        )
+
+        summaries = list_trace_ids(conn, "trace")
+
+        assert [s.trace_id for s in summaries] == ["tr-1", "tr-2"]
+        tr1 = summaries[0]
+        assert tr1.span_count == 2
+        assert tr1.first_recorded_at_ns == 100
+        assert tr1.last_recorded_at_ns == 200
+        assert tr1.any_error is False
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_excludes_null_trace_id_and_other_channels(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-1", "trace", trace_id="tr-1"),
+                _make_event("evt-2", "trace", trace_id=None),
+                _make_event("evt-3", "snapshot", trace_id="tr-other"),
+            ],
+        )
+
+        summaries = list_trace_ids(conn, "trace")
+
+        assert [s.trace_id for s in summaries] == ["tr-1"]
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_reports_any_error(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-1", "trace", trace_id="tr-err", payload={"error": False}),
+                _make_event("evt-2", "trace", trace_id="tr-err", payload={"error": True}),
+                _make_event("evt-3", "trace", trace_id="tr-ok", payload={"error": False}),
+            ],
+        )
+
+        summaries = {s.trace_id: s for s in list_trace_ids(conn, "trace")}
+
+        assert summaries["tr-err"].any_error is True
+        assert summaries["tr-ok"].any_error is False
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_respects_limit(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event(f"evt-{i}", "trace", trace_id=f"tr-{i}") for i in range(5)])
+
+        summaries = list_trace_ids(conn, "trace", limit=2)
+
+        assert len(summaries) == 2
+    finally:
+        conn.close()
+
+
+def test_get_events_by_trace_id_orders_by_monotonic_ns(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-late", "trace", trace_id="tr-1", monotonic_ns=300),
+                _make_event("evt-early", "trace", trace_id="tr-1", monotonic_ns=100),
+                _make_event("evt-mid", "trace", trace_id="tr-1", monotonic_ns=200),
+            ],
+        )
+
+        events = get_events_by_trace_id(conn, "tr-1")
+
+        assert [e.event_id for e in events] == ["evt-early", "evt-mid", "evt-late"]
+    finally:
+        conn.close()
+
+
+def test_get_events_by_trace_id_filters_by_channel(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-trace", "trace", trace_id="tr-1"),
+                _make_event("evt-snapshot", "snapshot", trace_id="tr-1"),
+            ],
+        )
+
+        all_events = get_events_by_trace_id(conn, "tr-1")
+        trace_only = get_events_by_trace_id(conn, "tr-1", channel="trace")
+
+        assert {e.event_id for e in all_events} == {"evt-trace", "evt-snapshot"}
+        assert [e.event_id for e in trace_only] == ["evt-trace"]
+    finally:
+        conn.close()
+
+
+def test_get_events_by_trace_id_unknown_returns_empty(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        assert get_events_by_trace_id(conn, "does-not-exist") == []
     finally:
         conn.close()

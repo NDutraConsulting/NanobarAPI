@@ -17,12 +17,14 @@ NanobarAPI in two ways:
 from __future__ import annotations
 
 import contextvars
+import os
 import time
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import propagate, trace
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from starlette.routing import BaseRoute, Match, Mount
 
@@ -40,6 +42,46 @@ current_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("cu
 
 _SCOPE_KEY = "nanobar.trace"
 
+#: Environment variable that opts into local trace capture — see `configure_tracing`.
+TRACING_ENABLED_ENV_VAR = "NANOBAR_TRACING_ENABLED"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def configure_tracing(enabled: bool | None = None) -> bool:
+    """Configures a local, non-exporting OTel `TracerProvider` so `EventBusTraceMiddleware`
+    can capture real spans into this project's own eventbus, without requiring any external
+    OTel SDK setup or backend — capturing spans locally and exporting them to a real
+    external system are different concerns, and only the second one actually needs an
+    external service. A bare `TracerProvider()` with no span processors attached generates
+    real, correctly-random trace/span ids and supports real W3C context propagation; it just
+    never sends anything anywhere, which is exactly what "capture into our own SQLite
+    eventbus" needs and nothing more.
+
+    Tracing is opt-in, not automatic, specifically so instrumentation is never silently
+    active. `enabled` defaults to the `NANOBAR_TRACING_ENABLED` environment variable
+    (`"1"`/`"true"`/`"yes"`/`"on"`, case-insensitive; anything else, including unset, is
+    treated as disabled) when not given explicitly.
+
+    Idempotent and safe to call more than once (e.g. once per `EventBusTraceMiddleware`
+    instance constructed): does nothing if a real provider is already active, whether
+    configured by an earlier call to this function or by the app itself for genuine external
+    OTLP export — existing configuration is always respected, never overridden.
+
+    Returns whether a real (non-NoOp/Proxy) tracer provider is active after this call.
+    """
+    if enabled is None:
+        enabled = os.environ.get(TRACING_ENABLED_ENV_VAR, "").strip().lower() in _TRUTHY
+
+    current = trace.get_tracer_provider()
+    if not isinstance(current, trace.NoOpTracerProvider | trace.ProxyTracerProvider):
+        return True  # a real provider — ours from an earlier call, or the app's own — is active
+
+    if not enabled:
+        return False
+
+    trace.set_tracer_provider(TracerProvider())
+    return True
+
 
 class EventBusTraceMiddleware:
     """Create an OpenTelemetry server span per HTTP request and publish it to the eventbus.
@@ -49,12 +91,20 @@ class EventBusTraceMiddleware:
     request path: at span end, the relevant fields are serialized into an `Event` and
     handed to `repository.put(channel, event)` for an out-of-band consumer to forward
     (e.g. to a real OTLP exporter) later.
+
+    Calls `configure_tracing()` on construction, so local capture into the eventbus works
+    immediately when `NANOBAR_TRACING_ENABLED` is set — no external OTel SDK setup or
+    backend required for that. With the env var unset (the default) and no real provider
+    configured for some other reason (e.g. the app's own external OTLP export setup), this
+    middleware is a correct no-op: it still checks `scope["type"]` and passes non-HTTP
+    scopes through, but emits nothing.
     """
 
     def __init__(self, app: ASGIApp, repository: EventQueueRepository, channel: str = "trace") -> None:
         self.app = app
         self.repository = repository
         self.channel = channel
+        configure_tracing()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope.get(_SCOPE_KEY):

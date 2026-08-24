@@ -15,6 +15,12 @@ dependencies = [
     "sqlalchemy>=2.0",
     "anyio>=4.0",
     "opentelemetry-api>=1.20",
+    # Real runtime dependency, not test-only: nanobar_api.middleware.trace.configure_tracing
+    # constructs a local, non-exporting SDK TracerProvider so trace capture into this
+    # project's own eventbus works when opted into (NANOBAR_TRACING_ENABLED) without any
+    # external OTel setup or backend — see that function's docstring for why a real SDK
+    # provider, not just the opentelemetry-api's NoOp default, is needed for this.
+    "opentelemetry-sdk>=1.20",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +37,15 @@ dev = [
     # (falls back to httpx only with a deprecation warning; see .focusari/
     # nanobarapi-beta-with-starlette-build-plan-and-tasks.md §5.3).
     "httpx2>=2.0.0",
-    # Test-only: gives EventBusTraceMiddleware tests a real, exportable Span/TracerProvider
-    # instead of the opentelemetry-api's NoOp default. Not a runtime dependency of nanobar_api.
-    "opentelemetry-sdk>=1.20",
+    # Demo/seed-script only: focusari_kahnban is a real, already-tested app (built on
+    # focusari_asgi, not this project's Starlette base) used purely as a realistic traffic
+    # source for the regression-brick capture pipeline. Not a runtime dependency of nanobar_api
+    # — ASGI middleware composition doesn't care which framework produced the wrapped app.
+    "focusari-kahnban",
 ]
+
+[tool.uv.sources]
+focusari-kahnban = { path = "../focusari_kahnban", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nanobar_api"]

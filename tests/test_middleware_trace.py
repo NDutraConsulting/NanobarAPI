@@ -14,7 +14,13 @@ from starlette.types import Message, Receive, Scope, Send
 
 from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
-from nanobar_api.middleware.trace import EventBusTraceMiddleware, current_span_id, current_trace_id
+from nanobar_api.middleware.trace import (
+    TRACING_ENABLED_ENV_VAR,
+    EventBusTraceMiddleware,
+    configure_tracing,
+    current_span_id,
+    current_trace_id,
+)
 
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX16 = re.compile(r"^[0-9a-f]{16}$")
@@ -217,6 +223,88 @@ def test_no_tracer_configured_skips_instrumentation(monkeypatch: pytest.MonkeyPa
 
     assert response.status_code == 200
     assert repository.get_any(["trace"], timeout=0.2) is None
+
+
+# ------------------------------------------------------------------- configure_tracing ---
+
+
+def _patch_no_real_provider(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Monkeypatches the OTel global provider accessors to look like nothing real is
+    configured yet, and returns a list that captured `set_tracer_provider` calls append to
+    — this avoids touching real global OTel state, which (per this module's own top-level
+    comment) can only genuinely be set once per process.
+    """
+    set_calls: list[object] = []
+    monkeypatch.setattr(otel_trace, "get_tracer_provider", lambda: otel_trace.NoOpTracerProvider())
+    monkeypatch.setattr(otel_trace, "set_tracer_provider", set_calls.append)
+    return set_calls
+
+
+def test_configure_tracing_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.delenv(TRACING_ENABLED_ENV_VAR, raising=False)
+
+    result = configure_tracing()
+
+    assert result is False
+    assert set_calls == []
+
+
+def test_configure_tracing_enabled_via_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.setenv(TRACING_ENABLED_ENV_VAR, "1")
+
+    result = configure_tracing()
+
+    assert result is True
+    assert len(set_calls) == 1
+    assert isinstance(set_calls[0], TracerProvider)
+
+
+@pytest.mark.parametrize("value", ["true", "YES", "On", "1"])
+def test_configure_tracing_env_var_truthy_variants(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.setenv(TRACING_ENABLED_ENV_VAR, value)
+
+    assert configure_tracing() is True
+    assert len(set_calls) == 1
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "", "garbage"])
+def test_configure_tracing_env_var_falsy_variants(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.setenv(TRACING_ENABLED_ENV_VAR, value)
+
+    assert configure_tracing() is False
+    assert set_calls == []
+
+
+def test_configure_tracing_explicit_true_overrides_missing_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.delenv(TRACING_ENABLED_ENV_VAR, raising=False)
+
+    assert configure_tracing(enabled=True) is True
+    assert len(set_calls) == 1
+
+
+def test_configure_tracing_explicit_false_overrides_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_calls = _patch_no_real_provider(monkeypatch)
+    monkeypatch.setenv(TRACING_ENABLED_ENV_VAR, "1")
+
+    assert configure_tracing(enabled=False) is False
+    assert set_calls == []
+
+
+def test_configure_tracing_does_not_override_an_already_real_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_calls: list[object] = []
+    monkeypatch.setattr(otel_trace, "get_tracer_provider", lambda: TracerProvider())
+    monkeypatch.setattr(otel_trace, "set_tracer_provider", set_calls.append)
+    monkeypatch.setenv(TRACING_ENABLED_ENV_VAR, "1")
+
+    result = configure_tracing()
+
+    assert result is True
+    assert set_calls == []  # already real — must not call set_tracer_provider again
 
 
 @pytest.mark.anyio

@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS nanobar_regression_bricks (
     FOREIGN KEY (nanobar_id) REFERENCES nanobars(nanobar_id) ON DELETE CASCADE,
     FOREIGN KEY (regression_brick_id) REFERENCES regression_bricks(regression_brick_id) ON DELETE RESTRICT
 );
+
+CREATE TABLE IF NOT EXISTS regression_brick_review_status (
+    regression_brick_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('new', 'reviewed', 'flagged', 'promoted')) DEFAULT 'new',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT NOT NULL,
+    FOREIGN KEY (regression_brick_id) REFERENCES regression_bricks(regression_brick_id) ON DELETE CASCADE
+);
 """
 
 TRIGGER_SQL = """
@@ -104,3 +112,13 @@ class NanobarBrickBinding:
     matched_by: str
     match_rule: str | None = None
     confidence: float | None = None
+
+
+REVIEW_STATUSES = ("new", "reviewed", "flagged", "promoted")
+
+
+@dataclass(frozen=True)
+class BrickReviewStatus:
+    regression_brick_id: str
+    status: str
+    updated_by: str

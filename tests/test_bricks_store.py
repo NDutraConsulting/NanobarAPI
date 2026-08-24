@@ -14,9 +14,12 @@ from nanobar_api.bricks.store import (
     get_bricks_for_nanobar,
     get_nanobar,
     get_nanobars_for_brick,
+    get_review_status,
     insert_brick,
     insert_nanobar,
+    list_bricks_by_review_status,
     list_nanobars,
+    set_review_status,
 )
 
 
@@ -313,5 +316,111 @@ def test_deleting_brick_still_bound_to_a_nanobar_is_restricted(tmp_path: Path) -
 
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("DELETE FROM regression_bricks WHERE regression_brick_id = 'rbrick-1'")
+    finally:
+        conn.close()
+
+
+def test_review_status_defaults_to_new(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        status = get_review_status(conn, "rbrick-1")
+
+        assert status.status == "new"
+        assert status.regression_brick_id == "rbrick-1"
+    finally:
+        conn.close()
+
+
+def test_set_review_status_updates_and_get_reflects_it(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        set_review_status(conn, "rbrick-1", "flagged", updated_by="alice")
+        status = get_review_status(conn, "rbrick-1")
+
+        assert status.status == "flagged"
+        assert status.updated_by == "alice"
+    finally:
+        conn.close()
+
+
+def test_set_review_status_can_be_changed_again(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        set_review_status(conn, "rbrick-1", "flagged", updated_by="alice")
+        set_review_status(conn, "rbrick-1", "promoted", updated_by="bob")
+        status = get_review_status(conn, "rbrick-1")
+
+        assert status.status == "promoted"
+        assert status.updated_by == "bob"
+    finally:
+        conn.close()
+
+
+def test_set_review_status_rejects_invalid_status(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        with pytest.raises(ValueError, match="invalid review status"):
+            set_review_status(conn, "rbrick-1", "bogus", updated_by="alice")
+    finally:
+        conn.close()
+
+
+def test_list_bricks_by_review_status_treats_unset_as_new(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1", content_hash="sha256:a"))
+        insert_brick(conn, _make_brick("rbrick-2", content_hash="sha256:b"))
+        set_review_status(conn, "rbrick-2", "flagged", updated_by="alice")
+
+        new_bricks = list_bricks_by_review_status(conn, "new")
+        flagged_bricks = list_bricks_by_review_status(conn, "flagged")
+        all_bricks = list_bricks_by_review_status(conn)
+
+        assert [b.regression_brick_id for b in new_bricks] == ["rbrick-1"]
+        assert [b.regression_brick_id for b in flagged_bricks] == ["rbrick-2"]
+        assert {b.regression_brick_id for b in all_bricks} == {"rbrick-1", "rbrick-2"}
+    finally:
+        conn.close()
+
+
+def test_list_bricks_by_review_status_rejects_invalid_status(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        with pytest.raises(ValueError, match="invalid review status"):
+            list_bricks_by_review_status(conn, "bogus")
+    finally:
+        conn.close()
+
+
+def test_review_status_removed_when_brick_deleted_via_cascade(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+        set_review_status(conn, "rbrick-1", "flagged", updated_by="alice")
+
+        # regression_bricks itself can't be deleted while bound to a nanobar (tested elsewhere),
+        # but with no binding it's deletable, and review status should cascade with it.
+        with conn:
+            conn.execute("DELETE FROM regression_bricks WHERE regression_brick_id = 'rbrick-1'")
+
+        row = conn.execute(
+            "SELECT 1 FROM regression_brick_review_status WHERE regression_brick_id = 'rbrick-1'"
+        ).fetchone()
+        assert row is None
     finally:
         conn.close()

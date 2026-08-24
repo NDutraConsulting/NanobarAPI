@@ -1,6 +1,8 @@
 from .generate import generate_bricks as generate_bricks
 from .replay import replay_brick as replay_brick
 from .schema import (
+    REVIEW_STATUSES as REVIEW_STATUSES,
+    BrickReviewStatus as BrickReviewStatus,
     MonitorTargetRef as MonitorTargetRef,
     Nanobar as Nanobar,
     NanobarBrickBinding as NanobarBrickBinding,

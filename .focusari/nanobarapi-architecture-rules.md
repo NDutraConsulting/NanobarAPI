@@ -104,6 +104,46 @@ status: new/reviewed/flagged/promoted) presented as a kanban-style board — reu
 for a new, brick-shaped data model, not `focusari_kahnban`'s own Board/List/Card schema, which
 isn't a natural fit for what a brick actually is.
 
+**Built as demo tooling, not yet a shipped framework feature:** `demo/dashboard/` (a small
+NanobarAPI app dogfooding this project's own `Controller`/`Service`/`Repository`/envelope
+conventions) implements exactly this drill-down — `/dashboard`, `/nanobars/{id}`,
+`/bricks/{id}`, `/triage`, plus a matching JSON API under `/api/...` using the envelope
+contract. `demo/seed_kahnban_bricks.py` drives real `focusari_kahnban` traffic (including its
+cross-board-move rejection and position/reorder paths — this project's own history of real bugs
+in that exact logic) through the full capture pipeline to populate it with genuine data, not
+synthetic fixtures. Verified live end-to-end (dashboard → nanobar → brick → a real
+new→flagged review-status transition, correctly rejecting an invalid status) — the one thing
+*not* independently confirmed is the drag gesture itself in a rendered browser, since this
+session has no browser tool; the `fetch()` call it triggers was verified directly instead.
+Both remain demo/proof tooling under `demo/`, not part of the `nanobar_api` package itself.
+
+**Trace/span review — a minimal timeline, not a duplicated Jaeger.** `demo/dashboard/` also
+has `/traces` and `/traces/{trace_id}`, reading `events.db`'s `"trace"` channel via
+`nanobar_api.eventbus.store`'s `list_trace_ids`/`get_events_by_trace_id` (real library
+functions, not demo-only). Deliberately not a waterfall/duration view — `EventBusTraceMiddleware`
+records one completion timestamp per span, not a start/end pair, so the timeline shows relative
+*offset* between spans, honestly labeled as such, not fabricated durations. This was chosen over
+exporting to a real OTLP-compatible backend (Jaeger, Grafana+Tempo) specifically to avoid adding
+an external service to this beta's QA loop; that remains the better answer once trace review
+needs more than this.
+
+**Corrected design, not just a workaround:** building this first surfaced a real bug — the seed
+script wrapped kahnban with `EventBusTraceMiddleware`, which never emitted a single span, because
+its NoOp-provider short-circuit (ported from `focusari_asgi`'s reference middleware) was gating
+on "is a real *external* OTel SDK configured," a question that doesn't actually apply here. That
+check makes sense when spans are exported to a real external backend — skip the work if nothing
+downstream will ever see it. It's the wrong question for this system, where spans are captured
+into our *own* local SQLite eventbus, nothing external. The fix isn't "remember to configure an
+OTel SDK provider" (what the seed script did as a first pass) — it's
+`nanobar_api.middleware.trace.configure_tracing()`, called automatically by
+`EventBusTraceMiddleware.__init__`: opt-in via a single environment variable
+(`NANOBAR_TRACING_ENABLED`), which — only when set — configures a local, non-exporting SDK
+`TracerProvider` (real trace/span id generation and W3C propagation, sends nothing anywhere).
+No external OTel setup, no backend, required to get local trace capture working; tracing stays
+off by default so instrumentation is never silently active. `opentelemetry-sdk` moved from a
+test-only dev dependency to a real one as a result — `EventBusTraceMiddleware`'s own production
+code now constructs a `TracerProvider` when opted in, not just tests.
+
 ## Shadow Execution and Persistence Rerouting
 
 **Shadow-persistence rerouting** is an execution mode in which an authenticated RegressionBrick replay enters through the normal API contract but runs against an environment-approved shadow persistence profile. The request exercises the same route, validation, controller, service, repository, and model code while preventing access to the production write database.
