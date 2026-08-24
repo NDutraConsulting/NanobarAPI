@@ -6,11 +6,16 @@ NanobarAPI is an opinionated Python ASGI API for building observable, integratio
 
 ```text
 Python ASGI
-Starlette
+focusari_asgi (a security-hardened fork of Starlette — see focusari_asgi/.focusari/
+  stripdown-refactor-plan.md and focusari_asgi/.focusari/focusari_asgi_agent_context.md
+  for its full divergences from upstream Starlette before writing code against it)
 OpenAPI
 SQLite
 SQLAlchemy
 ```
+
+NanobarAPI wraps `focusari_asgi` the way FastAPI wraps Starlette: `focusari_asgi` is a
+dependency, never modified in place for NanobarAPI's sake.
 
 ## Request Flow
 
@@ -59,7 +64,45 @@ RegressionBricks use a shadow persistence layer separate from operational applic
 - trace and span correlation;
 - controlled review through administrative dashboards.
 
-Sensitive fields must be excluded, redacted, tokenized, or encrypted according to capture policy. Access control, audit logging, key management, retention, and deletion policies are also required when the system is operated in a HIPAA-regulated environment. RegressionBricks can support HIPAA-compliant operation; encryption and redaction alone do not establish compliance.
+Sensitive fields must be excluded, redacted, tokenized, or encrypted according to capture policy. Access control, audit logging, key management, retention, and deletion policies are also required when the system is operated in a HIPAA-regulated environment. RegressionBricks can support HIPAA-compliant operation; encryption and redaction alone do not establish compliance. See `data-retention-adr.md` for the retention/deletion mechanism (per-data-class policy, evidentiary deletion kept distinct from routine housekeeping) and `data-privacy-adr.md` for what "capture policy" actually means as a structured object, and the fail-closed rule for unclassified fields.
+
+## Nanobar Concept & Dashboard
+
+A **Nanobar** is a stable, long-lived *regression scenario* — distinct from a RegressionBrick,
+which is one immutable piece of *captured evidence*. A Nanobar is the thing being regression-
+tested (e.g. "checkout times out when the payment provider is slow"); RegressionBricks are the
+individual real request/response instances captured over time that support or refute it. This
+distinction was previously only implicit in the schema (`nanobars`,`nanobar_regression_bricks`,
+the canonical Nanobar JSON example above) — stated explicitly here since the dashboard depends
+on it.
+
+**`monitor_target_refs`** (a field already on Nanobar, schema above) is the mapping between a
+Nanobar and the real system entry point(s) it monitors: `{"target_type": ..., "stable_name":
+...}`. `target_type` spans this project's own request-flow model
+(`Route → Validation → Controller → Services → Agents/Workflows`, "Request Flow" above) — expect
+`openapi_operation` (an API route, `stable_name` matching the OpenAPI operation id), plus
+`controller_span`, `agent`, and `service` as the framework grows enough real usage to instrument
+those boundaries. A single Nanobar can reference more than one target (a scenario can span a
+route and the service it calls).
+
+**`nanobar_regression_bricks`** (schema above) is how many RegressionBricks accumulate under one
+Nanobar over time: each binding row records `match_method` (`exact`/`regex`/`fuzzy`/`trace`/
+`manual`) and a `confidence`, so a brick's association with a scenario is itself evidenced, not
+assumed. Duplicate bricks (the same request/response pair captured more than once) are prevented
+at brick-generation time via `content_hash` equality — `regression_brick_id`'s own `UNIQUE`
+`content_hash` column plus a check-before-insert (`nanobar_api.bricks.generate.generate_bricks`)
+already do this; a second capture of the same underlying request/response is recognized as a
+duplicate and skipped, not silently re-stored, so it's never bound to a Nanobar as if it were new
+evidence.
+
+**Dashboard drill-down**, the "controlled review through administrative dashboards" line above,
+made concrete: Nanobar Dashboard (grouped/filterable by `monitor_target_refs.target_type` —
+api-routes, controller spans, agents, services) → one **Nanobar** → its bound
+**RegressionBricks** (via `nanobar_regression_bricks`) → one **brick** → a triage view (review
+status: new/reviewed/flagged/promoted) presented as a kanban-style board — reusing the
+`focusari_kahnban` project's already-built, already-verified drag-and-drop interaction pattern
+for a new, brick-shaped data model, not `focusari_kahnban`'s own Board/List/Card schema, which
+isn't a natural fit for what a brick actually is.
 
 ## Shadow Execution and Persistence Rerouting
 
@@ -131,7 +174,7 @@ Nanobar-Regression-Brick-Id: rbrick-8401
 Nanobar-Shadow-Profile: postprod-full
 ```
 
-These headers are an internal dispatch contract between the replay control API and the Shadow Worker. Public ingress must strip or reject them. The headers identify the replay run, execution mode, immutable source RegressionBrick, and requested profile. They must never contain a database URL, credential, or arbitrary environment name. `ShadowRoutingMiddleware` verifies the signed internal caller, resolves the run and profile from server-side configuration, and creates a `ShadowExecutionContext` before endpoint code runs. Captured authorization headers, cookies, CSRF tokens, and credentials must not be replayed; the Shadow Worker uses an approved seed or shadow identity.
+These headers are an internal dispatch contract between the replay control API and the Shadow Worker. Public ingress must strip or reject them. The headers identify the replay run, execution mode, immutable source RegressionBrick, and requested profile. They must never contain a database URL, credential, or arbitrary environment name. `ShadowRoutingMiddleware` verifies the signed internal caller, resolves the run and profile from server-side configuration, and creates a `ShadowExecutionContext` before endpoint code runs. Captured authorization headers, cookies, CSRF tokens, and credentials must not be replayed; the Shadow Worker uses an approved seed or shadow identity (`data-privacy-adr.md` §2).
 
 ```text
 admin dashboard request
@@ -358,7 +401,7 @@ BEGIN
 END;
 ```
 
-The binding table keeps scenario assignment and matcher provenance separate from the immutable RegressionBrick. Controlled deletion may still be performed through the retention workflow after bindings and audit requirements are resolved.
+The binding table keeps scenario assignment and matcher provenance separate from the immutable RegressionBrick. Controlled deletion may still be performed through the retention workflow after bindings and audit requirements are resolved — formalized in `data-retention-adr.md` §3.
 
 ## ADR: Database Boundaries
 
@@ -372,6 +415,91 @@ The binding table keeps scenario assignment and matcher provenance separate from
 - Do not create cross-service database joins or hidden cross-database transactions.
 
 **Tradeoffs:** Multiple SQLite databases can reduce unrelated write contention and isolate failures, but they add migration, backup, consistency, and operational complexity. SQLite still serializes writes within each database file; separation helps only when the responsibility boundaries also separate the workload.
+
+## ADR: Eventbus & Background Processing
+
+**Decision:** Logs, traces, and fire-and-forget service triggers (sending an email or SMS, for
+example) are handled by a durable, SQLite-backed eventbus owned by NanobarAPI — not an
+in-process-only mechanism, and not an external broker (Redis/RabbitMQ + Celery/RQ/arq, the
+standard answer to this problem elsewhere in the Python ecosystem, and what `focusari_asgi`'s
+own upstream, FastAPI, points to once its `BackgroundTasks` isn't enough). Full design in
+`regression-brick-system-plan.md` §2. This lives in NanobarAPI, not `focusari_asgi`:
+`focusari_asgi`'s own scope is explicitly limited to a thin, close-to-upstream ASGI substrate
+with no application-architecture or observability code
+(`focusari_asgi/.focusari/stripdown-refactor-plan.md` §1) — an opinionated eventbus is squarely
+an application-layer concern, the same way FastAPI (not Starlette) owns request validation and
+dependency injection.
+
+**Implementation rules:**
+
+- Producers (API request handlers) enqueue via `EventQueueRepository.put(channel, event)` — a
+  non-blocking, in-memory, thread-safe `queue.Queue` put. Never call an external service or do
+  disk I/O directly from a request handler for anything eventbus-shaped. This holds regardless of
+  a channel's storage driver (below) — driver choice never leaks into the producer call site.
+- Each channel is configured (`ChannelConfig`: `thread="shared"|"dedicated"`, `priority`,
+  `store="local"|"local-multicore"|"distributed"`), not hardcoded. Every `event-thread`,
+  regardless of channel, does exactly one job: durably insert into that channel's configured
+  `EventStore`. It never calls an external service itself.
+- Storage is a pluggable driver behind one `EventStore` interface
+  (`insert`/`claim`/`ack`/`fail`) — the same shape as Laravel's per-queue-connection drivers, but
+  three tiers rather than two, since "more cores on this box" and "needs a networked,
+  multi-machine store" are different problems with different costs. `store="local"` (default) and
+  `store="local-multicore"` are the *same* SQLite `EventStore` (`events.db`, dedicated to this
+  purpose, separate from domain data, WAL mode) — `local` runs it from one process,
+  `local-multicore` runs it from N processes on the same box (real cores, no new infrastructure),
+  which requires `busy_timeout`/retry handling on `SQLITE_BUSY` that single-process `local`
+  doesn't need. `store="distributed"` swaps in a genuinely different, networked backend for
+  channels that must span machines or have outgrown one file's write-serialization even with
+  retries; exact backend unresolved (`regression-brick-system-plan.md` §2).
+- All channel-specific processing — building RegressionBricks, exporting traces, actually
+  sending an email/SMS — happens in an independently-scheduled worker
+  (`WorkerConfig.mode="cron"` for low-urgency, analytical channels; `mode="listening"`, a
+  persistent tight-polling process, for latency-sensitive service-triggering channels), entirely
+  decoupled from the API process's lifecycle. A `local-multicore` or `distributed` channel's
+  worker is N processes claiming from the same `EventStore` instead of one; for `mode="cron"`
+  those N invocations are supervised by the external scheduler that triggers them, while
+  `mode="listening"` still needs its own keep-alive supervision (open, `regression-brick-system-plan.md` §9).
+- Channels needing delivery guarantees, not just best-effort, use `attempt_count`/`last_error`
+  on the `events` row for retry; purely observational channels don't need to.
+- Workers claim rows via a `BEGIN IMMEDIATE`-atomic, time-bounded lease (`claimed_by`/
+  `lease_expires_at`), not a bare `WHERE processed_at IS NULL` read — required once
+  `local-multicore`/`distributed` make more than one worker process per channel real. A dead
+  worker's lease simply expires and another live worker reclaims the row; a `workers` heartbeat
+  table makes worker liveness observable.
+- A `SupervisorConfig` check/restart/escalate loop (10s default interval) restarts a crashed
+  `mode="listening"` worker locally, escalating to a dated log file plus a direct (non-eventbus)
+  notification after repeated failures. Covers `local`/`local-multicore`; a `distributed` worker
+  on another machine still needs real process-management infrastructure, not this loop (design
+  detail and remaining open question: `regression-brick-system-plan.md` §2/§9).
+
+**See also:** `kafka-integration-adr.md` — an open (not decided) exploration of whether Kafka
+could serve as a `distributed`-tier backend, the real semantic gaps that raises (row-level
+claim/lease/ack vs. Kafka's partition-assigned, offset-committed, immutable-log model), and
+whether that support, if ever built, belongs in `nanobar_api` or a separate package.
+`scaling-throughput-adr.md` — decides *when* a channel escalates `local` → `local-multicore` →
+`distributed` (signal-driven, never capacity-planned ahead of evidence) and catalogs the
+tradeoff behind every tuning knob this ADR's implementation rules reference, without inventing
+numeric defaults this project has no production traffic yet to justify. `data-retention-adr.md`
+— the raw `events` table's retention (routine housekeeping, reuses `WorkerConfig`'s
+`mode="cron"` machinery) versus RegressionBricks' retention (evidentiary, admin-gated,
+formalizing the "retention workflow" this project's own RegressionBrick section already assumes
+exists). `data-privacy-adr.md` — unifies this project's scattered capture/redaction rules into
+one `CapturePolicy` object applied at every capture point, plus one new rule: an unclassified
+field defaults to redacted, enforced at the same schema-review gate
+`regression-brick-system-plan.md` §6 already requires for induced contracts.
+
+**Tradeoffs:** No extra infrastructure to run (SQLite is a file, not a service) versus a
+Redis/RabbitMQ-backed system — real operational simplicity, and it also solves a subtlety many
+naive Celery/FastAPI integrations skip (enqueuing itself, e.g. `task.delay()`, is a blocking
+network call if done carelessly from an async route; this design's in-memory queue keeps that
+off the request path too). The three-tier `store` split (design detail:
+`regression-brick-system-plan.md` §2) exists so that ceiling isn't an all-or-nothing choice:
+`local-multicore` gets a channel real multi-core throughput — more OS processes on the same
+dedicated instance, same SQLite file, no new service — before reaching for `distributed`'s actual
+operational cost (a networked store to run and operate). Only a channel that must span *machines*,
+or has outgrown what one file's writers can absorb even with `SQLITE_BUSY` retry handling, needs
+`distributed` (Postgres or a network-native broker) — decided per channel, not forced on the whole
+system.
 
 ## Core Principle
 

@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "NanobarAPI"
+version = "0.1.0"
+description = "An opinionated ASGI API framework wrapping Starlette (beta v0.1, Starlette-based build)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+dependencies = [
+    "starlette>=0.46.0",
+    "sqlalchemy>=2.0",
+    "anyio>=4.0",
+    "opentelemetry-api>=1.20",
+]
+
+[project.optional-dependencies]
+serve = ["uvicorn>=0.30"]
+
+[dependency-groups]
+dev = [
+    "NanobarAPI[serve]",
+    "coverage>=7.8.2",
+    "mypy==2.1.0",
+    "ruff==0.16.0",
+    "pytest==9.1.1",
+    # Needed by starlette.testclient.TestClient — real Starlette prefers httpx2 over httpx now
+    # (falls back to httpx only with a deprecation warning; see .focusari/
+    # nanobarapi-beta-with-starlette-build-plan-and-tasks.md §5.3).
+    "httpx2>=2.0.0",
+    # Test-only: gives EventBusTraceMiddleware tests a real, exportable Span/TracerProvider
+    # instead of the opentelemetry-api's NoOp default. Not a runtime dependency of nanobar_api.
+    "opentelemetry-sdk>=1.20",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["nanobar_api"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",      # https://docs.astral.sh/ruff/rules/#error-e
+    "F",      # https://docs.astral.sh/ruff/rules/#pyflakes-f
+    "I",      # https://docs.astral.sh/ruff/rules/#isort-i
+    "FA",     # https://docs.astral.sh/ruff/rules/#flake8-future-annotations-fa
+    "UP",     # https://docs.astral.sh/ruff/rules/#pyupgrade-up
+    "RUF100", # https://docs.astral.sh/ruff/rules/#ruff-specific-rules-ruf
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+addopts = "-rXs --strict-config --strict-markers"
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["nanobar_api", "tests"]
+
+[tool.coverage.report]
+exclude_also = [
+    "@overload",
+    "raise NotImplementedError",
+]
