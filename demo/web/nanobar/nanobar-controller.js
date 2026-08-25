@@ -15,6 +15,27 @@ function getNanobarIdFromPath() {
 
 const nanobarId = getNanobarIdFromPath();
 
+/* ------------------------------------------------------------ handlers */
+
+async function handleEditSubmit(event) {
+  event.preventDefault();
+  ui.clearEditMessages();
+  ui.setEditFormBusy(true);
+  try {
+    const envelope = await api.updateNanobar(nanobarId, ui.readEditFormFields());
+    if (envelope.status !== "success") {
+      ui.showEditError(envelope.msg || "Could not save changes.");
+      return;
+    }
+    ui.renderSummary(nanobarId, envelope.result.data);
+    ui.showEditSuccess("Saved.");
+  } catch (err) {
+    ui.showEditError("Network error while saving. Please try again.");
+  } finally {
+    ui.setEditFormBusy(false);
+  }
+}
+
 /**
  * The bricks-for-nanobar endpoint is the only one that 404s when the
  * nanobar itself doesn't exist, so it drives the not-found state. The
@@ -59,6 +80,8 @@ async function loadNanobar() {
 }
 
 async function init() {
+  ui.elements.editForm.addEventListener("submit", handleEditSubmit);
+
   if (!nanobarId) {
     ui.showNotFound("No nanobar specified.");
     return;

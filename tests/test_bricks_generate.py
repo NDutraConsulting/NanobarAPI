@@ -5,6 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 from starlette.applications import Starlette
@@ -398,6 +399,54 @@ def test_request_headers_and_query_params_carried_through(tmp_path: Path) -> Non
         brick = bricks[0]
         assert brick.request["headers"].get("content-type") == "application/json"
         assert brick.request["query_params"] == {"q": "widgets"}
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
+def _event_with_status_code(status_code: int | None, event_id: str = "evt-1") -> Event:
+    return Event(
+        event_id=event_id,
+        channel="snapshot",
+        recorded_at_ns=1,
+        monotonic_ns=1,
+        payload={
+            "request": {"method": "GET", "path": "/x", "headers": {}, "query_params": {}, "body_b64": ""},
+            "response": {"status_code": status_code, "body_b64": ""},
+            "content_hash": f"hash-{event_id}",
+            "error": False,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_scenario_type"),
+    [
+        (200, "success"),
+        (201, "success"),
+        (299, "success"),
+        (400, "invalid_input"),
+        (401, "unauthorized"),
+        (403, "forbidden"),
+        (404, "not_found"),
+        (409, "conflict"),
+        (422, "validation_error"),
+        (500, "server_error"),
+        (503, "server_error"),
+        (418, None),  # unrecognized status code -- classify as None, not a guess
+        (None, None),  # missing status code entirely
+    ],
+)
+def test_regression_scenario_type_classified_from_status_code(
+    tmp_path: Path, status_code: int | None, expected_scenario_type: str | None
+) -> None:
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [_event_with_status_code(status_code)])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert bricks[0].regression_scenario_type == expected_scenario_type
     finally:
         events_conn.close()
         bricks_conn.close()

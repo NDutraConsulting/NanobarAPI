@@ -7,19 +7,26 @@ import pytest
 
 from nanobar_api.bricks.schema import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick
 from nanobar_api.bricks.store import (
+    add_brick_tag,
     bind_brick_to_nanobar,
     connect,
     get_brick,
     get_brick_by_content_hash,
+    get_brick_scenario,
     get_bricks_for_nanobar,
     get_nanobar,
     get_nanobars_for_brick,
     get_review_status,
+    get_tags_for_brick,
     insert_brick,
     insert_nanobar,
     list_bricks_by_review_status,
+    list_bricks_by_tag,
     list_nanobars,
+    remove_brick_tag,
+    set_brick_scenario,
     set_review_status,
+    update_nanobar,
 )
 
 
@@ -42,7 +49,7 @@ def _make_nanobar(nanobar_id: str, target_refs: list[MonitorTargetRef] | None = 
         schema_version="1.0",
         system_name="checkout-service",
         system_version="1.0.0",
-        regression_scenario_type="happy_path",
+        nanobar_type="api-response",
         request_object_id="req-1",
         response_object_id="res-1",
         regression_weight=0.5,
@@ -422,5 +429,300 @@ def test_review_status_removed_when_brick_deleted_via_cascade(tmp_path: Path) ->
             "SELECT 1 FROM regression_brick_review_status WHERE regression_brick_id = 'rbrick-1'"
         ).fetchone()
         assert row is None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------- nanobar new fields ---
+
+
+def test_nanobar_type_and_human_navigation_fields_round_trip(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        nanobar = Nanobar(
+            nanobar_id="nb-1",
+            schema_version="1.0",
+            system_name="checkout-service",
+            system_version="1.0.0",
+            nanobar_type="api-to-db",
+            request_object_id="req-1",
+            response_object_id="res-1",
+            regression_weight=0.5,
+            endpoint_scenario_frequency={"state": "unmeasured"},
+            created_by="test",
+            monitor_target_refs=[MonitorTargetRef(target_type="openapi_operation", stable_name="checkout")],
+            label="Order lookup",
+            scenario_description="Fetches a single order by id.",
+            component_source_description="checkout_service.orders.repository",
+            domain="checkout",
+            source_info={"code.function.name": "checkout_service.orders.repository.get_order"},
+        )
+        insert_nanobar(conn, nanobar)
+
+        fetched = get_nanobar(conn, "nb-1")
+
+        assert fetched == nanobar
+    finally:
+        conn.close()
+
+
+def test_update_nanobar_overwrites_human_navigation_fields(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_nanobar(conn, _make_nanobar("nb-1"))
+
+        update_nanobar(
+            conn,
+            "nb-1",
+            label="Get order",
+            scenario_description="Fetches a single order by id.",
+            component_source_description="checkout.repository",
+            domain="checkout",
+        )
+        fetched = get_nanobar(conn, "nb-1")
+
+        assert fetched is not None
+        assert fetched.label == "Get order"
+        assert fetched.scenario_description == "Fetches a single order by id."
+        assert fetched.component_source_description == "checkout.repository"
+        assert fetched.domain == "checkout"
+    finally:
+        conn.close()
+
+
+def test_update_nanobar_with_no_fields_clears_them(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_nanobar(conn, _make_nanobar("nb-1"))
+        update_nanobar(conn, "nb-1", label="X")
+
+        update_nanobar(conn, "nb-1")  # no kwargs -- overwrites everything with None
+        fetched = get_nanobar(conn, "nb-1")
+
+        assert fetched is not None
+        assert fetched.label is None
+    finally:
+        conn.close()
+
+
+def test_nanobar_human_navigation_fields_default_to_none(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_nanobar(conn, _make_nanobar("nb-1"))
+
+        fetched = get_nanobar(conn, "nb-1")
+
+        assert fetched is not None
+        assert fetched.label is None
+        assert fetched.scenario_description is None
+        assert fetched.component_source_description is None
+        assert fetched.domain is None
+        assert fetched.source_info is None
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------- brick regression_scenario_type ---
+
+
+def test_brick_regression_scenario_type_round_trips(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        brick = RegressionBrick(
+            regression_brick_id="rbrick-1",
+            schema_version="1.0",
+            brick_version=1,
+            source={},
+            request={},
+            response={"status_code": 404},
+            content_hash="sha256:x",
+            created_by="test",
+            regression_scenario_type="not_found",
+        )
+        insert_brick(conn, brick)
+
+        fetched = get_brick(conn, "rbrick-1")
+
+        assert fetched == brick
+        assert fetched.regression_scenario_type == "not_found"
+    finally:
+        conn.close()
+
+
+def test_brick_regression_scenario_type_defaults_to_none(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        fetched = get_brick(conn, "rbrick-1")
+
+        assert fetched is not None
+        assert fetched.regression_scenario_type is None
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------- brick scenario (human) ---
+
+
+def test_brick_scenario_defaults_to_unset(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        scenario = get_brick_scenario(conn, "rbrick-1")
+
+        assert scenario.regression_brick_id == "rbrick-1"
+        assert scenario.regression_scenario_label is None
+        assert scenario.description is None
+        assert scenario.updated_by == "system"
+    finally:
+        conn.close()
+
+
+def test_set_brick_scenario_updates_and_get_reflects_it(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        set_brick_scenario(
+            conn,
+            "rbrick-1",
+            regression_scenario_label="Order not found",
+            description="Order id does not exist in the system.",
+            updated_by="alice",
+        )
+        scenario = get_brick_scenario(conn, "rbrick-1")
+
+        assert scenario.regression_scenario_label == "Order not found"
+        assert scenario.description == "Order id does not exist in the system."
+        assert scenario.updated_by == "alice"
+    finally:
+        conn.close()
+
+
+def test_set_brick_scenario_can_be_changed_again(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        set_brick_scenario(conn, "rbrick-1", regression_scenario_label="First", updated_by="alice")
+        set_brick_scenario(conn, "rbrick-1", regression_scenario_label="Second", updated_by="bob")
+        scenario = get_brick_scenario(conn, "rbrick-1")
+
+        assert scenario.regression_scenario_label == "Second"
+        assert scenario.updated_by == "bob"
+    finally:
+        conn.close()
+
+
+def test_brick_scenario_removed_when_brick_deleted_via_cascade(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+        set_brick_scenario(conn, "rbrick-1", regression_scenario_label="X", updated_by="alice")
+
+        with conn:
+            conn.execute("DELETE FROM regression_bricks WHERE regression_brick_id = 'rbrick-1'")
+
+        row = conn.execute("SELECT 1 FROM regression_brick_scenario WHERE regression_brick_id = 'rbrick-1'").fetchone()
+        assert row is None
+    finally:
+        conn.close()
+
+
+# -------------------------------------------------------------------------------- brick tags ---
+
+
+def test_add_and_get_tags_for_brick(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        add_brick_tag(conn, "rbrick-1", "flaky")
+        add_brick_tag(conn, "rbrick-1", "checkout")
+
+        assert get_tags_for_brick(conn, "rbrick-1") == ["checkout", "flaky"]
+    finally:
+        conn.close()
+
+
+def test_add_brick_tag_is_idempotent(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+
+        add_brick_tag(conn, "rbrick-1", "flaky")
+        add_brick_tag(conn, "rbrick-1", "flaky")
+
+        assert get_tags_for_brick(conn, "rbrick-1") == ["flaky"]
+    finally:
+        conn.close()
+
+
+def test_remove_brick_tag(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+        add_brick_tag(conn, "rbrick-1", "flaky")
+        add_brick_tag(conn, "rbrick-1", "checkout")
+
+        remove_brick_tag(conn, "rbrick-1", "flaky")
+
+        assert get_tags_for_brick(conn, "rbrick-1") == ["checkout"]
+    finally:
+        conn.close()
+
+
+def test_list_bricks_by_tag(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1", content_hash="sha256:one"))
+        insert_brick(conn, _make_brick("rbrick-2", content_hash="sha256:two"))
+        add_brick_tag(conn, "rbrick-1", "flaky")
+        add_brick_tag(conn, "rbrick-2", "stable")
+
+        flaky = list_bricks_by_tag(conn, "flaky")
+
+        assert [b.regression_brick_id for b in flaky] == ["rbrick-1"]
+    finally:
+        conn.close()
+
+
+def test_add_brick_tag_to_unknown_brick_is_rejected_by_foreign_key(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            add_brick_tag(conn, "does-not-exist", "flaky")
+    finally:
+        conn.close()
+
+
+def test_brick_tags_removed_when_brick_deleted_via_cascade(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_brick(conn, _make_brick("rbrick-1"))
+        add_brick_tag(conn, "rbrick-1", "flaky")
+
+        with conn:
+            conn.execute("DELETE FROM regression_bricks WHERE regression_brick_id = 'rbrick-1'")
+
+        assert get_tags_for_brick(conn, "rbrick-1") == []
     finally:
         conn.close()

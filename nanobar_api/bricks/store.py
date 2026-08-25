@@ -8,6 +8,7 @@ from nanobar_api.bricks.schema import (
     SCHEMA_SQL,
     TRIGGER_SQL,
     BrickReviewStatus,
+    BrickScenario,
     MonitorTargetRef,
     Nanobar,
     NanobarBrickBinding,
@@ -32,8 +33,8 @@ def insert_brick(conn: sqlite3.Connection, brick: RegressionBrick) -> None:
             INSERT INTO regression_bricks (
                 regression_brick_id, schema_version, brick_version, forked_from_regression_brick_id,
                 source_json, request_json, response_json, trace_refs_json,
-                capture_policy_id, content_hash, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                capture_policy_id, content_hash, regression_scenario_type, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 brick.regression_brick_id,
@@ -46,6 +47,7 @@ def insert_brick(conn: sqlite3.Connection, brick: RegressionBrick) -> None:
                 json.dumps(brick.trace_refs),
                 brick.capture_policy_id,
                 brick.content_hash,
+                brick.regression_scenario_type,
                 brick.created_by,
             ),
         )
@@ -75,6 +77,7 @@ def _row_to_brick(row: sqlite3.Row) -> RegressionBrick:
         trace_refs=json.loads(row["trace_refs_json"]),
         capture_policy_id=row["capture_policy_id"],
         content_hash=row["content_hash"],
+        regression_scenario_type=row["regression_scenario_type"],
         created_by=row["created_by"],
     )
 
@@ -84,17 +87,19 @@ def insert_nanobar(conn: sqlite3.Connection, nanobar: Nanobar) -> None:
         conn.execute(
             """
             INSERT INTO nanobars (
-                nanobar_id, schema_version, system_name, system_version, regression_scenario_type,
+                nanobar_id, schema_version, system_name, system_version, nanobar_type,
                 request_object_id, response_object_id, regression_weight,
-                endpoint_scenario_frequency_json, monitor_target_refs_json, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                endpoint_scenario_frequency_json, monitor_target_refs_json,
+                label, scenario_description, component_source_description,
+                domain, source_info_json, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 nanobar.nanobar_id,
                 nanobar.schema_version,
                 nanobar.system_name,
                 nanobar.system_version,
-                nanobar.regression_scenario_type,
+                nanobar.nanobar_type,
                 nanobar.request_object_id,
                 nanobar.response_object_id,
                 nanobar.regression_weight,
@@ -105,8 +110,39 @@ def insert_nanobar(conn: sqlite3.Connection, nanobar: Nanobar) -> None:
                         for ref in nanobar.monitor_target_refs
                     ]
                 ),
+                nanobar.label,
+                nanobar.scenario_description,
+                nanobar.component_source_description,
+                nanobar.domain,
+                json.dumps(nanobar.source_info) if nanobar.source_info is not None else None,
                 nanobar.created_by,
             ),
+        )
+
+
+def update_nanobar(
+    conn: sqlite3.Connection,
+    nanobar_id: str,
+    *,
+    label: str | None = None,
+    scenario_description: str | None = None,
+    component_source_description: str | None = None,
+    domain: str | None = None,
+) -> None:
+    """Overwrites the human-navigation fields with exactly the values given — partial-
+    update ("keep unspecified fields as-is") semantics belong to the caller, e.g. by reading
+    the current `Nanobar` first and merging, not to this function. `source_info` is
+    deliberately not settable here — it's auto-derived structured data (see
+    `nanobar_api.telemetry`), not a human-edited field, same category as `monitor_target_refs`.
+    """
+    with conn:
+        conn.execute(
+            """
+            UPDATE nanobars
+            SET label = ?, scenario_description = ?, component_source_description = ?, domain = ?
+            WHERE nanobar_id = ?
+            """,
+            (label, scenario_description, component_source_description, domain, nanobar_id),
         )
 
 
@@ -129,7 +165,7 @@ def _row_to_nanobar(row: sqlite3.Row) -> Nanobar:
         schema_version=row["schema_version"],
         system_name=row["system_name"],
         system_version=row["system_version"],
-        regression_scenario_type=row["regression_scenario_type"],
+        nanobar_type=row["nanobar_type"],
         request_object_id=row["request_object_id"],
         response_object_id=row["response_object_id"],
         regression_weight=row["regression_weight"],
@@ -138,6 +174,11 @@ def _row_to_nanobar(row: sqlite3.Row) -> Nanobar:
             MonitorTargetRef(target_type=ref["target_type"], stable_name=ref["stable_name"])
             for ref in json.loads(row["monitor_target_refs_json"])
         ],
+        label=row["label"],
+        scenario_description=row["scenario_description"],
+        component_source_description=row["component_source_description"],
+        domain=row["domain"],
+        source_info=json.loads(row["source_info_json"]) if row["source_info_json"] is not None else None,
         created_by=row["created_by"],
     )
 
@@ -231,3 +272,85 @@ def get_nanobars_for_brick(conn: sqlite3.Connection, regression_brick_id: str) -
         (regression_brick_id,),
     ).fetchall()
     return [_row_to_nanobar(row) for row in rows]
+
+
+def set_brick_scenario(
+    conn: sqlite3.Connection,
+    regression_brick_id: str,
+    *,
+    regression_scenario_label: str | None = None,
+    description: str | None = None,
+    updated_by: str,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO regression_brick_scenario
+                (regression_brick_id, regression_scenario_label, description, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(regression_brick_id) DO UPDATE SET
+                regression_scenario_label = excluded.regression_scenario_label,
+                description = excluded.description,
+                updated_at = CURRENT_TIMESTAMP,
+                updated_by = excluded.updated_by
+            """,
+            (regression_brick_id, regression_scenario_label, description, updated_by),
+        )
+
+
+def get_brick_scenario(conn: sqlite3.Connection, regression_brick_id: str) -> BrickScenario:
+    row = conn.execute(
+        "SELECT regression_brick_id, regression_scenario_label, description, updated_by "
+        "FROM regression_brick_scenario WHERE regression_brick_id = ?",
+        (regression_brick_id,),
+    ).fetchone()
+    if row is None:
+        return BrickScenario(
+            regression_brick_id=regression_brick_id,
+            regression_scenario_label=None,
+            description=None,
+            updated_by="system",
+        )
+    return BrickScenario(
+        regression_brick_id=row["regression_brick_id"],
+        regression_scenario_label=row["regression_scenario_label"],
+        description=row["description"],
+        updated_by=row["updated_by"],
+    )
+
+
+def add_brick_tag(conn: sqlite3.Connection, regression_brick_id: str, tag: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO regression_brick_tags (regression_brick_id, tag) VALUES (?, ?)",
+            (regression_brick_id, tag),
+        )
+
+
+def remove_brick_tag(conn: sqlite3.Connection, regression_brick_id: str, tag: str) -> None:
+    with conn:
+        conn.execute(
+            "DELETE FROM regression_brick_tags WHERE regression_brick_id = ? AND tag = ?",
+            (regression_brick_id, tag),
+        )
+
+
+def get_tags_for_brick(conn: sqlite3.Connection, regression_brick_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT tag FROM regression_brick_tags WHERE regression_brick_id = ? ORDER BY tag",
+        (regression_brick_id,),
+    ).fetchall()
+    return [row["tag"] for row in rows]
+
+
+def list_bricks_by_tag(conn: sqlite3.Connection, tag: str) -> list[RegressionBrick]:
+    rows = conn.execute(
+        """
+        SELECT rb.* FROM regression_bricks rb
+        JOIN regression_brick_tags rbt ON rbt.regression_brick_id = rb.regression_brick_id
+        WHERE rbt.tag = ?
+        ORDER BY rb.created_at
+        """,
+        (tag,),
+    ).fetchall()
+    return [_row_to_brick(row) for row in rows]

@@ -18,6 +18,19 @@ const bricksEmptyEl = document.getElementById("bricks-empty");
 
 const brickRowTemplate = document.getElementById("brick-row-template");
 
+const editFormEl = document.getElementById("edit-form");
+const editLabelEl = document.getElementById("edit-label");
+const editScenarioDescriptionEl = document.getElementById("edit-scenario-description");
+const editComponentSourceEl = document.getElementById("edit-component-source");
+const editDomainEl = document.getElementById("edit-domain");
+const editSaveBtnEl = document.getElementById("edit-save-btn");
+const editErrorEl = document.getElementById("edit-error");
+const editSuccessEl = document.getElementById("edit-success");
+
+export const elements = {
+  editForm: editFormEl,
+};
+
 const REVIEW_PILL_CLASSES = {
   new: "review-pill-new",
   reviewed: "review-pill-reviewed",
@@ -105,10 +118,12 @@ export function renderSummary(nanobarId, nanobar) {
   summaryGridEl.textContent = "";
 
   const fields = [
+    ["Type", nanobar.nanobar_type],
+    ["Domain", nanobar.domain],
     ["System version", nanobar.system_version],
-    ["Scenario type", nanobar.regression_scenario_type],
     ["Regression weight", nanobar.regression_weight],
     ["Scenario frequency", nanobar.endpoint_scenario_frequency],
+    ["Source info", nanobar.source_info],
     ["Created by", nanobar.created_by],
     ["Schema version", nanobar.schema_version],
   ];
@@ -118,7 +133,9 @@ export function renderSummary(nanobarId, nanobar) {
     const dt = document.createElement("dt");
     dt.textContent = label;
     const dd = document.createElement("dd");
-    dd.textContent = String(value);
+    // Object-valued fields (scenario frequency, source info) render as readable JSON,
+    // not the useless "[object Object]" that String(value) would otherwise produce.
+    dd.textContent = typeof value === "object" ? JSON.stringify(value) : String(value);
     summaryGridEl.append(dt, dd);
   }
 
@@ -132,6 +149,53 @@ export function renderSummary(nanobarId, nanobar) {
     chip.append(strong, document.createTextNode(` · ${ref.stable_name}`));
     summaryTargetsEl.appendChild(chip);
   }
+
+  populateEditForm(nanobar);
+}
+
+/* ------------------------------------------------------------ edit form */
+
+/** Pre-fills the edit form's inputs with the nanobar's current navigation-field values —
+ * the form doubles as this page's display of them, so they aren't duplicated read-only
+ * in the summary grid above. */
+function populateEditForm(nanobar) {
+  editLabelEl.value = nanobar.label || "";
+  editScenarioDescriptionEl.value = nanobar.scenario_description || "";
+  editComponentSourceEl.value = nanobar.component_source_description || "";
+  editDomainEl.value = nanobar.domain || "";
+}
+
+/** Reads the edit form's current field values as a partial-update payload. */
+export function readEditFormFields() {
+  return {
+    label: editLabelEl.value,
+    scenario_description: editScenarioDescriptionEl.value,
+    component_source_description: editComponentSourceEl.value,
+    domain: editDomainEl.value,
+  };
+}
+
+export function showEditError(message) {
+  editSuccessEl.hidden = true;
+  editErrorEl.textContent = message;
+  editErrorEl.hidden = false;
+}
+
+export function showEditSuccess(message) {
+  editErrorEl.hidden = true;
+  editSuccessEl.textContent = message;
+  editSuccessEl.hidden = false;
+}
+
+export function clearEditMessages() {
+  editErrorEl.hidden = true;
+  editSuccessEl.hidden = true;
+}
+
+/** Disables the save button (and shows a busy label) while a save request is in flight. */
+export function setEditFormBusy(isBusy) {
+  editSaveBtnEl.disabled = isBusy;
+  editSaveBtnEl.textContent = isBusy ? "Saving…" : "Save";
 }
 
 /* ---------------------------------------------------------------- bricks */

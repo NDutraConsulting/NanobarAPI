@@ -49,7 +49,7 @@ def _make_nanobar(
         schema_version="1.0",
         system_name=system_name,
         system_version="1.0.0",
-        regression_scenario_type="happy_path",
+        nanobar_type="api-response",
         request_object_id="req-1",
         response_object_id="res-1",
         regression_weight=0.5,
@@ -296,6 +296,251 @@ def test_api_set_review_status_body_not_an_object(db_path: str, client: TestClie
 
     assert response.status_code == 400
     assert "status" in response.json()["msg"]
+
+
+def test_api_list_nanobars_includes_type_and_navigation_fields(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    data = client.get("/api/nanobars").json()["result"]["data"]
+
+    assert data[0]["nanobar_type"] == "api-response"
+    assert data[0]["label"] is None
+    assert data[0]["scenario_description"] is None
+    assert data[0]["component_source_description"] is None
+
+
+def test_api_brick_detail_includes_scenario_type_scenario_and_tags(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", status_code=404))
+    conn.close()
+
+    data = client.get("/api/bricks/rbrick-1").json()["result"]["data"]
+
+    assert data["regression_scenario_type"] is None  # store round-trip only -- not classified here
+    assert data["scenario"] == {
+        "regression_brick_id": "rbrick-1",
+        "regression_scenario_label": None,
+        "description": None,
+        "updated_by": "system",
+    }
+    assert data["tags"] == []
+
+
+def test_api_update_nanobar_partial_update(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    first = client.patch("/api/nanobars/nb-1", json={"label": "Get order"})
+    assert first.status_code == 200
+    assert first.json()["result"]["data"]["label"] == "Get order"
+
+    # Second call only sets scenario_description -- label from the first call must survive.
+    second = client.patch("/api/nanobars/nb-1", json={"scenario_description": "Fetches an order."})
+
+    assert second.status_code == 200
+    data = second.json()["result"]["data"]
+    assert data["label"] == "Get order"
+    assert data["scenario_description"] == "Fetches an order."
+
+
+def test_api_update_nanobar_not_found(client: TestClient) -> None:
+    response = client.patch("/api/nanobars/does-not-exist", json={"label": "X"})
+
+    assert response.status_code == 404
+    assert response.json()["status"] == "error"
+
+
+def test_api_update_nanobar_rejects_non_string_field(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/api/nanobars/nb-1", json={"label": 123})
+
+    assert response.status_code == 400
+    assert "label" in response.json()["msg"]
+
+
+def test_api_update_nanobar_rejects_malformed_json(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch(
+        "/api/nanobars/nb-1", content=b"{not valid json", headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 400
+    assert "JSON" in response.json()["msg"]
+
+
+def test_api_update_nanobar_rejects_body_not_an_object(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/api/nanobars/nb-1", json=["label"])
+
+    assert response.status_code == 400
+
+
+def test_api_set_brick_scenario_partial_update(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    first = client.post("/api/bricks/rbrick-1/scenario", json={"regression_scenario_label": "Order not found"})
+    assert first.status_code == 200
+    assert first.json()["result"]["data"]["regression_scenario_label"] == "Order not found"
+    assert first.json()["result"]["data"]["updated_by"] == "dashboard"
+
+    # Second call (via PATCH this time) only sets description -- label must survive.
+    second = client.patch("/api/bricks/rbrick-1/scenario", json={"description": "The order id does not exist."})
+
+    assert second.status_code == 200
+    data = second.json()["result"]["data"]
+    assert data["regression_scenario_label"] == "Order not found"
+    assert data["description"] == "The order id does not exist."
+
+    # And it actually persisted onto the brick detail response.
+    followup = client.get("/api/bricks/rbrick-1")
+    assert followup.json()["result"]["data"]["scenario"]["description"] == "The order id does not exist."
+
+
+def test_api_set_brick_scenario_brick_not_found(client: TestClient) -> None:
+    response = client.post("/api/bricks/does-not-exist/scenario", json={"regression_scenario_label": "X"})
+
+    assert response.status_code == 404
+    assert response.json()["status"] == "error"
+
+
+def test_api_set_brick_scenario_rejects_non_string_field(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post("/api/bricks/rbrick-1/scenario", json={"description": 123})
+
+    assert response.status_code == 400
+    assert "description" in response.json()["msg"]
+
+
+def test_api_set_brick_scenario_rejects_malformed_json(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post(
+        "/api/bricks/rbrick-1/scenario", content=b"{not valid json", headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 400
+    assert "JSON" in response.json()["msg"]
+
+
+def test_api_set_brick_scenario_rejects_body_not_an_object(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post("/api/bricks/rbrick-1/scenario", json=["label"])
+
+    assert response.status_code == 400
+
+
+def test_api_add_and_remove_brick_tags(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    added_first = client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+    added_second = client.post("/api/bricks/rbrick-1/tags", json={"tag": "checkout"})
+
+    assert added_first.status_code == 200
+    assert added_first.json()["result"]["data"] == ["flaky"]
+    assert added_second.json()["result"]["data"] == ["checkout", "flaky"]
+
+    removed = client.delete("/api/bricks/rbrick-1/tags/flaky")
+
+    assert removed.status_code == 200
+    assert removed.json()["result"]["data"] == ["checkout"]
+
+    # And it actually persisted onto the brick detail response.
+    followup = client.get("/api/bricks/rbrick-1")
+    assert followup.json()["result"]["data"]["tags"] == ["checkout"]
+
+
+def test_api_add_brick_tag_is_idempotent(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+    response = client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+
+    assert response.json()["result"]["data"] == ["flaky"]
+
+
+def test_api_add_brick_tag_brick_not_found(client: TestClient) -> None:
+    response = client.post("/api/bricks/does-not-exist/tags", json={"tag": "flaky"})
+
+    assert response.status_code == 404
+    assert response.json()["status"] == "error"
+
+
+def test_api_add_brick_tag_rejects_missing_tag_field(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post("/api/bricks/rbrick-1/tags", json={})
+
+    assert response.status_code == 400
+    assert "tag" in response.json()["msg"]
+
+
+def test_api_add_brick_tag_rejects_empty_tag(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post("/api/bricks/rbrick-1/tags", json={"tag": ""})
+
+    assert response.status_code == 400
+
+
+def test_api_add_brick_tag_rejects_malformed_json(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.post(
+        "/api/bricks/rbrick-1/tags", content=b"{not valid json", headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 400
+    assert "JSON" in response.json()["msg"]
+
+
+def test_api_remove_brick_tag_brick_not_found(client: TestClient) -> None:
+    response = client.delete("/api/bricks/does-not-exist/tags/flaky")
+
+    assert response.status_code == 404
+    assert response.json()["status"] == "error"
+
+
+def test_api_remove_brick_tag_not_present_is_a_no_op(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
+    conn.close()
+
+    response = client.delete("/api/bricks/rbrick-1/tags/never-added")
+
+    assert response.status_code == 200
+    assert response.json()["result"]["data"] == []
 
 
 # ------------------------------------------------------------------------------- pages ---

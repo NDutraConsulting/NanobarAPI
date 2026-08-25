@@ -7,6 +7,38 @@ const groupsEl = document.getElementById("nanobars-groups");
 const emptyEl = document.getElementById("nanobars-empty");
 const groupTemplate = document.getElementById("target-group-template");
 const itemTemplate = document.getElementById("nanobar-item-template");
+const trackTypeFilterEl = document.getElementById("track-type-filter");
+
+export const elements = {
+  trackTypeFilter: trackTypeFilterEl,
+};
+
+/**
+ * Fills the track-type filter <select> with one option per distinct track
+ * type present in the data, plus the "All track types" default. Preserves
+ * the currently selected value if it's still one of the options.
+ * @param {string[]} trackTypes sorted, deduplicated track types
+ */
+export function populateTrackTypeFilter(trackTypes) {
+  const previousValue = trackTypeFilterEl.value;
+  trackTypeFilterEl.textContent = "";
+
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All track types";
+  trackTypeFilterEl.appendChild(allOption);
+
+  for (const trackType of trackTypes) {
+    const option = document.createElement("option");
+    option.value = trackType;
+    option.textContent = trackType;
+    trackTypeFilterEl.appendChild(option);
+  }
+
+  if (trackTypes.includes(previousValue)) {
+    trackTypeFilterEl.value = previousValue;
+  }
+}
 
 /** Show a transient status message (e.g. "Loading..."). */
 export function showStatus(message) {
@@ -37,7 +69,7 @@ export function hideStatus() {
  * Render the nanobars-by-target-type groups. Each group becomes its own
  * section with a heading, a count, and a list of nanobar links. Shows the
  * empty state when there are no groups at all.
- * @param {Array<{targetType: string, nanobars: Array<{nanobar_id: string, system_name: string, regression_scenario_type: string}>}>} groups
+ * @param {Array<{targetType: string, nanobars: Array<{nanobar_id: string, system_name: string, nanobar_type: string, label: string | null}>}>} groups
  */
 export function renderGroups(groups) {
   groupsEl.innerHTML = "";
@@ -69,7 +101,13 @@ export function renderGroups(groups) {
 
       itemNode.querySelector(".nanobar-id").textContent = nanobar.nanobar_id;
       itemNode.querySelector(".nanobar-system").textContent = nanobar.system_name;
-      itemNode.querySelector(".nanobar-scenario").textContent = nanobar.regression_scenario_type;
+      itemNode.querySelector(".nanobar-track-type").textContent = nanobar.nanobar_type;
+      const labelEl = itemNode.querySelector(".nanobar-label");
+      if (nanobar.label) {
+        labelEl.textContent = nanobar.label;
+      } else {
+        labelEl.remove();
+      }
 
       listEl.appendChild(itemNode);
     }

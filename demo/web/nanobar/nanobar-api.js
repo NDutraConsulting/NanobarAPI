@@ -20,3 +20,18 @@ export function fetchNanobarBricks(nanobarId) {
     method: "GET",
   });
 }
+
+/**
+ * PATCH /api/nanobars/{nanobar_id} — partial update of the human-navigation fields
+ * (label, scenario_description, component_source_description). Any field omitted from
+ * `fields` keeps its current stored value.
+ * @param {string} nanobarId
+ * @param {{label?: string, scenario_description?: string, component_source_description?: string}} fields
+ */
+export function updateNanobar(nanobarId, fields) {
+  return request(`/api/nanobars/${encodeURIComponent(nanobarId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+}

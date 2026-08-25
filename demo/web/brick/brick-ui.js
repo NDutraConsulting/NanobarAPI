@@ -14,6 +14,8 @@ const fieldSchemaVersionEl = document.getElementById("field-schema-version");
 const fieldBrickVersionEl = document.getElementById("field-brick-version");
 const fieldCreatedByEl = document.getElementById("field-created-by");
 const fieldSourceEl = document.getElementById("field-source");
+const fieldScenarioTypeRowEl = document.getElementById("field-scenario-type-row");
+const fieldScenarioTypeEl = document.getElementById("field-scenario-type");
 
 const reviewPillEl = document.getElementById("review-pill");
 const reviewButtonEls = Array.from(document.querySelectorAll(".review-btn"));
@@ -21,6 +23,25 @@ const reviewErrorEl = document.getElementById("review-error");
 
 const requestJsonEl = document.getElementById("request-json");
 const responseJsonEl = document.getElementById("response-json");
+
+const scenarioFormEl = document.getElementById("scenario-form");
+const scenarioLabelEl = document.getElementById("scenario-label");
+const scenarioDescriptionEl = document.getElementById("scenario-description");
+const scenarioSaveBtnEl = document.getElementById("scenario-save-btn");
+const scenarioErrorEl = document.getElementById("scenario-error");
+const scenarioSuccessEl = document.getElementById("scenario-success");
+
+const tagsListEl = document.getElementById("tags-list");
+const tagChipTemplate = document.getElementById("tag-chip-template");
+const tagAddFormEl = document.getElementById("tag-add-form");
+const tagAddInputEl = document.getElementById("tag-add-input");
+const tagsErrorEl = document.getElementById("tags-error");
+
+export const elements = {
+  scenarioForm: scenarioFormEl,
+  tagAddForm: tagAddFormEl,
+  tagsList: tagsListEl,
+};
 
 const STATUS_LABELS = {
   new: "New",
@@ -86,7 +107,16 @@ export function renderBrick(brick) {
   fieldCreatedByEl.textContent = brick.created_by;
   fieldSourceEl.textContent = brick.source;
 
+  if (brick.regression_scenario_type) {
+    fieldScenarioTypeRowEl.hidden = false;
+    fieldScenarioTypeEl.textContent = brick.regression_scenario_type;
+  } else {
+    fieldScenarioTypeRowEl.hidden = true;
+  }
+
   renderReviewStatus(brick.review_status);
+  renderScenario(brick.scenario);
+  renderTags(brick.tags);
 
   requestJsonEl.textContent = JSON.stringify(brick.request, null, 2);
   responseJsonEl.textContent = JSON.stringify(brick.response, null, 2);
@@ -129,6 +159,76 @@ export function setReviewButtonsBusy(isBusy) {
   }
 }
 
-export const elements = {
-  reviewButtons: reviewButtonEls,
-};
+elements.reviewButtons = reviewButtonEls;
+
+/* -------------------------------------------------------------- scenario */
+
+/** Pre-fills the scenario form's inputs from a `BrickScenario` object (as attached to a
+ * brick detail response's `scenario` field) — the form doubles as this section's display of
+ * the current values, so they aren't shown a second time read-only. */
+export function renderScenario(scenario) {
+  scenarioLabelEl.value = (scenario && scenario.regression_scenario_label) || "";
+  scenarioDescriptionEl.value = (scenario && scenario.description) || "";
+}
+
+/** Reads the scenario form's current field values as a partial-update payload. */
+export function readScenarioFormFields() {
+  return {
+    regression_scenario_label: scenarioLabelEl.value,
+    description: scenarioDescriptionEl.value,
+  };
+}
+
+export function showScenarioError(message) {
+  scenarioSuccessEl.hidden = true;
+  scenarioErrorEl.textContent = message;
+  scenarioErrorEl.hidden = false;
+}
+
+export function showScenarioSuccess(message) {
+  scenarioErrorEl.hidden = true;
+  scenarioSuccessEl.textContent = message;
+  scenarioSuccessEl.hidden = false;
+}
+
+export function clearScenarioMessages() {
+  scenarioErrorEl.hidden = true;
+  scenarioSuccessEl.hidden = true;
+}
+
+export function setScenarioFormBusy(isBusy) {
+  scenarioSaveBtnEl.disabled = isBusy;
+  scenarioSaveBtnEl.textContent = isBusy ? "Saving…" : "Save";
+}
+
+/* ------------------------------------------------------------------ tags */
+
+/** Renders the tag chip list from a plain array of tag strings. Each chip carries the tag
+ * as a `data-tag` attribute on its remove button, for the controller's delegated click
+ * handler to read. */
+export function renderTags(tags) {
+  tagsListEl.textContent = "";
+  for (const tag of tags || []) {
+    const node = tagChipTemplate.content.cloneNode(true);
+    node.querySelector(".tag-chip-text").textContent = tag;
+    node.querySelector(".tag-chip-remove").dataset.tag = tag;
+    tagsListEl.appendChild(node);
+  }
+}
+
+export function showTagsError(message) {
+  tagsErrorEl.textContent = message;
+  tagsErrorEl.hidden = false;
+}
+
+export function clearTagsError() {
+  tagsErrorEl.hidden = true;
+}
+
+export function readTagAddInput() {
+  return tagAddInputEl.value.trim();
+}
+
+export function clearTagAddInput() {
+  tagAddInputEl.value = "";
+}

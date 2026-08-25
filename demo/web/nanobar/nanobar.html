@@ -27,6 +27,31 @@
         <h2 id="summary-heading" class="section-heading">Nanobar summary</h2>
         <dl id="summary-grid" class="summary-grid"></dl>
         <div id="summary-targets" class="summary-targets"></div>
+
+        <div class="edit-controls" aria-labelledby="edit-controls-heading">
+          <h3 id="edit-controls-heading" class="edit-controls-heading">Edit navigation fields</h3>
+          <form id="edit-form" class="edit-form">
+            <label class="edit-field">
+              <span class="edit-field-label">Label</span>
+              <input type="text" id="edit-label" name="label" />
+            </label>
+            <label class="edit-field">
+              <span class="edit-field-label">Scenario description</span>
+              <textarea id="edit-scenario-description" name="scenario_description" rows="2"></textarea>
+            </label>
+            <label class="edit-field">
+              <span class="edit-field-label">Component source</span>
+              <input type="text" id="edit-component-source" name="component_source_description" />
+            </label>
+            <label class="edit-field">
+              <span class="edit-field-label">Domain</span>
+              <input type="text" id="edit-domain" name="domain" />
+            </label>
+            <button type="submit" id="edit-save-btn" class="edit-save-btn">Save</button>
+          </form>
+          <p id="edit-error" class="edit-error" role="alert" hidden></p>
+          <p id="edit-success" class="edit-success" role="status" hidden></p>
+        </div>
       </section>
 
       <section class="bricks-section" aria-labelledby="bricks-heading">

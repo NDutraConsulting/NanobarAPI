@@ -31,6 +31,37 @@ from nanobar_api.eventbus.store import get_unprocessed, mark_processed
 logger = logging.getLogger(__name__)
 
 
+def _classify_scenario_type(status_code: int | None) -> str | None:
+    """Classifies a captured response's status code into a coarse `regression_scenario_type` —
+    which member of its nanobar's class this brick represents (see
+    `.focusari/2026-08-24-refactor-nanobar-track-types-with-tasks.md` §1). Best-effort: an
+    unrecognized or missing status code classifies as `None` rather than guessing.
+
+    401 and 403 are kept distinct (`"unauthorized"`/`"forbidden"`) rather than merged into one
+    value — they're semantically different failures (failed authentication vs. failed
+    authorization) and a human reviewing bricks later may care about the distinction.
+    """
+    if status_code is None:
+        return None
+    if 200 <= status_code < 300:
+        return "success"
+    if status_code == 400:
+        return "invalid_input"
+    if status_code == 401:
+        return "unauthorized"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 404:
+        return "not_found"
+    if status_code == 409:
+        return "conflict"
+    if status_code == 422:
+        return "validation_error"
+    if 500 <= status_code < 600:
+        return "server_error"
+    return None
+
+
 def _decode_body_json(body_b64: str) -> dict[str, Any]:
     """Decode a base64 request/response body and try to parse it as JSON.
 
@@ -121,6 +152,7 @@ def generate_bricks(
             created_by=created_by,
             trace_refs=trace_refs,
             capture_policy_id=capture_policy_id,
+            regression_scenario_type=_classify_scenario_type(response_payload.get("status_code")),
         )
 
         if get_brick_by_content_hash(bricks_conn, content_hash) is None:

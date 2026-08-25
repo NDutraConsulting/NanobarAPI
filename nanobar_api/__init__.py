@@ -9,4 +9,5 @@ from .repositories import Repository as Repository
 from .routing import adapt_handler as adapt_handler
 from .services import Service as Service
 from .state_machine import InvalidTransition as InvalidTransition, StateMachine as StateMachine
+from .telemetry import NanobarProps as NanobarProps, NanobarTelemetry as NanobarTelemetry
 from .validation import ValidationError as ValidationError, parse as parse, to_json_schema as to_json_schema

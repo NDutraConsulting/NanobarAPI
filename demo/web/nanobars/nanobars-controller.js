@@ -5,9 +5,22 @@
 // file with top-level "run on page load" logic.
 
 import { fetchNanobars } from "./nanobars-api.js";
-import { showStatus, showLoadError, hideStatus, renderGroups } from "./nanobars-ui.js";
+import { showStatus, showLoadError, hideStatus, renderGroups, populateTrackTypeFilter, elements } from "./nanobars-ui.js";
 
 const UNTARGETED_LABEL = "(untargeted)";
+
+// The full, unfiltered list from the last successful fetch — kept so the track-type filter
+// can re-render client-side without a network round trip.
+let allNanobars = [];
+
+/**
+ * Distinct `nanobar_type` values present in the data, sorted.
+ * @param {Array<{nanobar_type: string}>} nanobars
+ * @returns {string[]}
+ */
+function distinctTrackTypes(nanobars) {
+  return [...new Set(nanobars.map((n) => n.nanobar_type).filter(Boolean))].sort();
+}
 
 /**
  * Groups nanobars by each distinct `monitor_target_refs[].target_type` they
@@ -39,7 +52,18 @@ function groupByTargetType(nanobars) {
     .map(([targetType, groupNanobars]) => ({ targetType, nanobars: groupNanobars }));
 }
 
-/** Load every nanobar from the API, group them, and render them. */
+/**
+ * Renders `allNanobars` filtered by the currently selected track type (supplementing, not
+ * replacing, the target-type grouping — a nanobar still appears once per target type it
+ * carries, just narrowed down to whichever track type is selected).
+ */
+function renderFiltered() {
+  const selected = elements.trackTypeFilter.value;
+  const filtered = selected ? allNanobars.filter((n) => n.nanobar_type === selected) : allNanobars;
+  renderGroups(groupByTargetType(filtered));
+}
+
+/** Load every nanobar from the API, populate the track-type filter, group them, and render them. */
 async function loadNanobars() {
   showStatus("Loading nanobars…");
   try {
@@ -49,13 +73,16 @@ async function loadNanobars() {
       return;
     }
     hideStatus();
-    renderGroups(groupByTargetType(envelope.result.data));
+    allNanobars = envelope.result.data;
+    populateTrackTypeFilter(distinctTrackTypes(allNanobars));
+    renderFiltered();
   } catch (err) {
     showLoadError("Could not reach the server. Please try again.");
   }
 }
 
 function init() {
+  elements.trackTypeFilter.addEventListener("change", renderFiltered);
   loadNanobars();
 }
 

@@ -19,6 +19,13 @@
       <p class="page-subtitle">All nanobars, grouped by monitored target type.</p>
     </header>
 
+    <div class="filter-bar">
+      <label for="track-type-filter" class="filter-label">Track type</label>
+      <select id="track-type-filter" class="filter-select">
+        <option value="">All track types</option>
+      </select>
+    </div>
+
     <main class="page-main">
       <div id="nanobars-status" class="nanobars-status" hidden></div>
 
@@ -46,7 +53,8 @@
       <a class="nanobar-link">
         <span class="nanobar-id"></span>
         <span class="nanobar-system"></span>
-        <span class="nanobar-scenario"></span>
+        <span class="nanobar-track-type"></span>
+        <span class="nanobar-label"></span>
       </a>
     </li>
   </template>

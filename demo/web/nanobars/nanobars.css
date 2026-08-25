@@ -82,6 +82,31 @@ body {
   gap: 2rem;
 }
 
+/* Filter bar */
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+
+.filter-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.filter-select {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
 /* Status / loading / error */
 
 .nanobars-status {
@@ -182,7 +207,16 @@ body {
   color: var(--color-text);
 }
 
-.nanobar-scenario {
+.nanobar-track-type {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+}
+
+.nanobar-label {
   font-size: 0.85rem;
   color: var(--color-text-muted);
 }

@@ -55,6 +55,10 @@
               <dt>Source</dt>
               <dd id="field-source"></dd>
             </div>
+            <div class="summary-row" id="field-scenario-type-row">
+              <dt>Scenario type</dt>
+              <dd id="field-scenario-type"></dd>
+            </div>
           </dl>
 
           <div class="review-controls" aria-labelledby="review-controls-heading">
@@ -66,6 +70,33 @@
               <button type="button" class="review-btn" data-status="promoted">Promoted</button>
             </div>
             <p id="review-error" class="review-error" role="alert" hidden></p>
+          </div>
+
+          <div class="scenario-controls" aria-labelledby="scenario-controls-heading">
+            <h3 id="scenario-controls-heading" class="scenario-controls-heading">Edit scenario</h3>
+            <form id="scenario-form" class="scenario-form">
+              <label class="scenario-field">
+                <span class="scenario-field-label">Label</span>
+                <input type="text" id="scenario-label" name="regression_scenario_label" />
+              </label>
+              <label class="scenario-field">
+                <span class="scenario-field-label">Description</span>
+                <textarea id="scenario-description" name="description" rows="2"></textarea>
+              </label>
+              <button type="submit" id="scenario-save-btn" class="scenario-save-btn">Save</button>
+            </form>
+            <p id="scenario-error" class="scenario-error" role="alert" hidden></p>
+            <p id="scenario-success" class="scenario-success" role="status" hidden></p>
+          </div>
+
+          <div class="tags-controls" aria-labelledby="tags-controls-heading">
+            <h3 id="tags-controls-heading" class="tags-controls-heading">Tags</h3>
+            <ul id="tags-list" class="tags-list"></ul>
+            <form id="tag-add-form" class="tag-add-form">
+              <input type="text" id="tag-add-input" placeholder="Add a tag" />
+              <button type="submit" id="tag-add-btn" class="tag-add-btn">Add</button>
+            </form>
+            <p id="tags-error" class="tags-error" role="alert" hidden></p>
           </div>
         </section>
 
@@ -81,6 +112,13 @@
       </div>
     </main>
   </div>
+
+  <template id="tag-chip-template">
+    <li class="tag-chip">
+      <span class="tag-chip-text"></span>
+      <button type="button" class="tag-chip-remove" aria-label="Remove tag">&times;</button>
+    </li>
+  </template>
 
   <script type="module" src="/static/brick/brick-controller.js"></script>
 </body>

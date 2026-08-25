@@ -161,6 +161,13 @@ body {
   display: contents;
 }
 
+/* `display: contents` (above) would otherwise silently override the `hidden` attribute's
+   `display: none` — author CSS beats the UA stylesheet at equal specificity — so this has
+   to be stated explicitly for `hidden` to actually work on a `.summary-row`. */
+.summary-row[hidden] {
+  display: none;
+}
+
 .summary-row dt {
   font-size: 0.85rem;
   color: var(--color-text-muted);
@@ -271,6 +278,200 @@ body {
 
 .review-error {
   margin: 0.85rem 0 0;
+  padding: 0.6rem 0.85rem;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+/* --------------------------------------------------------- scenario form */
+
+.scenario-controls {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.scenario-controls-heading {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.scenario-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  max-width: 480px;
+}
+
+.scenario-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.scenario-field-label {
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.scenario-field input,
+.scenario-field textarea {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  resize: vertical;
+}
+
+.scenario-field input:focus,
+.scenario-field textarea:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.scenario-save-btn {
+  align-self: flex-start;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.5rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.scenario-save-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.scenario-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.scenario-error,
+.scenario-success {
+  margin: 0.85rem 0 0;
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.scenario-error {
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
+}
+
+.scenario-success {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #047857;
+}
+
+/* -------------------------------------------------------------------- tags */
+
+.tags-controls {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.tags-controls-heading {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.tags-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.25rem 0.5rem 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--color-text);
+}
+
+.tag-chip-remove {
+  font: inherit;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+
+.tag-chip-remove:hover {
+  color: var(--color-error);
+}
+
+.tag-add-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 320px;
+}
+
+.tag-add-form input {
+  flex: 1;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.tag-add-form input:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.tag-add-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.tag-add-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tags-error {
+  margin: 0.6rem 0 0;
   padding: 0.6rem 0.85rem;
   background: var(--color-error-bg);
   border: 1px solid var(--color-error-border);

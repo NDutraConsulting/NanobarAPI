@@ -110,6 +110,29 @@ def _stable_name_for_brick(brick: RegressionBrick) -> str:
     return f"{method}:{_stable_path_template(path)}"
 
 
+def _resource_for_path_template(path_template: str) -> str:
+    """The last non-placeholder segment of a path template, e.g.
+    "/api/boards/{board_id}/lists" -> "lists". Matches which `focusari_kahnban/routes/*.py`
+    module actually owns the route — verified against every real route in
+    focusari_kahnban/routes/{boards,lists,cards}.py, including the two nested-creation routes
+    (`/api/boards/{board_id}/lists`, `/api/lists/{list_id}/cards`) where the *first* path
+    segment names the parent resource, not the module that owns the route.
+    """
+    segments = [s for s in path_template.strip("/").split("/") if not s.startswith("{")]
+    return segments[-1] if segments else "root"
+
+
+def _label_for(method: str, path_template: str, resource: str) -> str:
+    has_id_segment = any(s.startswith("{") for s in path_template.strip("/").split("/"))
+    verb = {"GET": "Get" if has_id_segment else "List", "POST": "Create", "PATCH": "Update", "DELETE": "Delete"}.get(
+        method, method
+    )
+    # "List boards" reads fine plural, but "Create board"/"Update card"/"Delete card" (singular,
+    # since each acts on exactly one resource) read better than "Create boards" would.
+    noun = resource[:-1] if verb != "List" and resource.endswith("s") else resource
+    return f"{verb} {noun}"
+
+
 def _find_nanobar_by_stable_name(conn: sqlite3.Connection, stable_name: str) -> Nanobar | None:
     for nanobar in list_nanobars(conn, target_type="openapi_operation"):
         if any(ref.stable_name == stable_name for ref in nanobar.monitor_target_refs):
@@ -123,18 +146,25 @@ def _get_or_create_nanobar(conn: sqlite3.Connection, stable_name: str) -> tuple[
     if existing is not None:
         return existing, False
 
+    method, path_template = stable_name.split(":", 1)
+    resource = _resource_for_path_template(path_template)
+
     nanobar = Nanobar(
         nanobar_id=f"nb-{uuid.uuid4().hex[:12]}",
         schema_version="1.0",
         system_name=SYSTEM_NAME,
         system_version=SYSTEM_VERSION,
-        regression_scenario_type="happy_path",  # all seeded traffic here is non-error, non-edge-case
+        nanobar_type="api-response",  # all kahnban traffic here goes through the API
         request_object_id=f"req-{stable_name}",
         response_object_id=f"res-{stable_name}",
         regression_weight=0.5,  # neutral placeholder; this project doesn't yet specify a real computation
         endpoint_scenario_frequency={"state": "unmeasured"},  # honest: no real production frequency data exists
         created_by=CREATED_BY,
         monitor_target_refs=[MonitorTargetRef(target_type="openapi_operation", stable_name=stable_name)],
+        label=_label_for(method, path_template, resource),
+        scenario_description=f"Exercises {method} {path_template} through real focusari_kahnban traffic.",
+        component_source_description=f"{SYSTEM_NAME}.routes.{resource}",
+        domain=resource,  # e.g. "boards"/"lists"/"cards" -- the natural sub-domain within kahnban
     )
     insert_nanobar(conn, nanobar)
     return nanobar, True

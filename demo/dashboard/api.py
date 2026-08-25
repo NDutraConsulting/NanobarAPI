@@ -13,7 +13,7 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from nanobar_api import error, success
+from nanobar_api import NanobarProps, NanobarTelemetry, error, success
 from nanobar_api.bricks import store as bricks_store
 from nanobar_api.bricks.schema import RegressionBrick
 from nanobar_api.eventbus import store as events_store
@@ -32,17 +32,41 @@ def _events_db_path(request: Request) -> str:
     return db_path
 
 
-def _brick_with_review_status(conn: Any, brick: RegressionBrick) -> dict[str, Any]:
+def _telemetry(request: Request) -> NanobarTelemetry:
+    telemetry: NanobarTelemetry = request.app.state.telemetry
+    return telemetry
+
+
+def _brick_detail_dict(conn: Any, brick: RegressionBrick) -> dict[str, Any]:
     status = bricks_store.get_review_status(conn, brick.regression_brick_id)
-    return {**dataclasses.asdict(brick), "review_status": dataclasses.asdict(status)}
+    scenario = bricks_store.get_brick_scenario(conn, brick.regression_brick_id)
+    tags = bricks_store.get_tags_for_brick(conn, brick.regression_brick_id)
+    return {
+        **dataclasses.asdict(brick),
+        "review_status": dataclasses.asdict(status),
+        "scenario": dataclasses.asdict(scenario),
+        "tags": tags,
+    }
 
 
 async def list_nanobars(request: Request) -> JSONResponse:
-    """GET /api/nanobars?target_type=... -> envelope success with a list of nanobars."""
+    """GET /api/nanobars?target_type=... -> envelope success with a list of nanobars.
+
+    The DB query is wrapped in its own nested `NanobarTelemetry` span — the first real
+    "api-to-db" boundary in this project, nested under `EventBusTraceMiddleware`'s HTTP-layer
+    span for this same request (both share one `EventQueueRepository`, see `app.py`). A
+    `NanobarTelemetry.span(...)` is used here as a context manager rather than `@decorator`
+    because `telemetry` is only available per-request (`request.app.state`), constructed after
+    this module is imported — the decorator form needs the instance to exist at import time,
+    which doesn't fit this call site.
+    """
     target_type = request.query_params.get("target_type")
     conn = get_connection(_db_path(request))
     try:
-        nanobars = bricks_store.list_nanobars(conn, target_type=target_type)
+        with _telemetry(request).span(
+            "dashboard.nanobars.list", nanobar=NanobarProps(type="api-to-db")
+        ):
+            nanobars = bricks_store.list_nanobars(conn, target_type=target_type)
         return JSONResponse(success([dataclasses.asdict(n) for n in nanobars], type_="array"))
     finally:
         conn.close()
@@ -56,7 +80,7 @@ async def nanobar_bricks(request: Request) -> JSONResponse:
         if bricks_store.get_nanobar(conn, nanobar_id) is None:
             return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
         bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
-        data = [_brick_with_review_status(conn, brick) for brick in bricks]
+        data = [_brick_detail_dict(conn, brick) for brick in bricks]
         return JSONResponse(success(data, type_="array"))
     finally:
         conn.close()
@@ -70,7 +94,7 @@ async def brick_detail(request: Request) -> JSONResponse:
         brick = bricks_store.get_brick(conn, brick_id)
         if brick is None:
             return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-        return JSONResponse(success(_brick_with_review_status(conn, brick)))
+        return JSONResponse(success(_brick_detail_dict(conn, brick)))
     finally:
         conn.close()
 
@@ -103,6 +127,124 @@ async def set_review_status(request: Request) -> JSONResponse:
             return JSONResponse(error(str(exc)), status_code=400)
 
         updated = bricks_store.get_review_status(conn, brick_id)
+        return JSONResponse(success(dataclasses.asdict(updated)))
+    finally:
+        conn.close()
+
+
+async def set_brick_scenario(request: Request) -> JSONResponse:
+    """PATCH/POST /api/bricks/{brick_id}/scenario with body
+    {"regression_scenario_label": "...", "description": "..."}.
+
+    Both fields are optional and independent — an omitted field keeps its current stored
+    value (partial update), it is not overwritten with null.
+    """
+    brick_id = request.path_params["brick_id"]
+    conn = get_connection(_db_path(request))
+    try:
+        if bricks_store.get_brick(conn, brick_id) is None:
+            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
+
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(error("request body must be valid JSON"), status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(error("request body must be a JSON object"), status_code=400)
+
+        current = bricks_store.get_brick_scenario(conn, brick_id)
+        label = body.get("regression_scenario_label", current.regression_scenario_label)
+        description = body.get("description", current.description)
+        if label is not None and not isinstance(label, str):
+            return JSONResponse(error("'regression_scenario_label' must be a string"), status_code=400)
+        if description is not None and not isinstance(description, str):
+            return JSONResponse(error("'description' must be a string"), status_code=400)
+
+        bricks_store.set_brick_scenario(
+            conn, brick_id, regression_scenario_label=label, description=description, updated_by="dashboard"
+        )
+        updated = bricks_store.get_brick_scenario(conn, brick_id)
+        return JSONResponse(success(dataclasses.asdict(updated)))
+    finally:
+        conn.close()
+
+
+async def add_brick_tag(request: Request) -> JSONResponse:
+    """POST /api/bricks/{brick_id}/tags with body {"tag": "..."} -> the brick's updated tag list."""
+    brick_id = request.path_params["brick_id"]
+    conn = get_connection(_db_path(request))
+    try:
+        if bricks_store.get_brick(conn, brick_id) is None:
+            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
+
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(error("request body must be valid JSON"), status_code=400)
+
+        tag = body.get("tag") if isinstance(body, dict) else None
+        if not isinstance(tag, str) or not tag:
+            return JSONResponse(error("request body must include a non-empty 'tag' string field"), status_code=400)
+
+        bricks_store.add_brick_tag(conn, brick_id, tag)
+        return JSONResponse(success(bricks_store.get_tags_for_brick(conn, brick_id), type_="array"))
+    finally:
+        conn.close()
+
+
+async def remove_brick_tag(request: Request) -> JSONResponse:
+    """DELETE /api/bricks/{brick_id}/tags/{tag} -> the brick's updated tag list."""
+    brick_id = request.path_params["brick_id"]
+    tag = request.path_params["tag"]
+    conn = get_connection(_db_path(request))
+    try:
+        if bricks_store.get_brick(conn, brick_id) is None:
+            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
+
+        bricks_store.remove_brick_tag(conn, brick_id, tag)
+        return JSONResponse(success(bricks_store.get_tags_for_brick(conn, brick_id), type_="array"))
+    finally:
+        conn.close()
+
+
+async def update_nanobar(request: Request) -> JSONResponse:
+    """PATCH /api/nanobars/{nanobar_id} with body
+    {"label": "...", "scenario_description": "...", "component_source_description": "...",
+    "domain": "..."}.
+
+    All four fields are optional and independent — an omitted field keeps its current
+    stored value (partial update), it is not overwritten with null. `source_info` is not
+    editable here — it's auto-derived structured data, not a human-edited field.
+    """
+    nanobar_id = request.path_params["nanobar_id"]
+    conn = get_connection(_db_path(request))
+    try:
+        current = bricks_store.get_nanobar(conn, nanobar_id)
+        if current is None:
+            return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
+
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(error("request body must be valid JSON"), status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(error("request body must be a JSON object"), status_code=400)
+
+        fields = {
+            "label": body.get("label", current.label),
+            "scenario_description": body.get("scenario_description", current.scenario_description),
+            "component_source_description": body.get(
+                "component_source_description", current.component_source_description
+            ),
+            "domain": body.get("domain", current.domain),
+        }
+        for name, value in fields.items():
+            if value is not None and not isinstance(value, str):
+                return JSONResponse(error(f"{name!r} must be a string"), status_code=400)
+
+        bricks_store.update_nanobar(conn, nanobar_id, **fields)
+        updated = bricks_store.get_nanobar(conn, nanobar_id)
+        assert updated is not None
         return JSONResponse(success(dataclasses.asdict(updated)))
     finally:
         conn.close()
