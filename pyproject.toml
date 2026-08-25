@@ -26,6 +26,9 @@ dependencies = [
 [project.optional-dependencies]
 serve = ["uvicorn>=0.30"]
 
+[project.scripts]
+nanobar = "nanobar_api.cli:main"
+
 [dependency-groups]
 dev = [
     "NanobarAPI[serve]",

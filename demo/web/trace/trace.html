@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trace · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/trace/trace.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/">Nanobars</a>
+      <a href="/triage">Triage board</a>
+      <a href="/traces" aria-current="page">Traces</a>
+    </nav>
+
+    <header class="page-header">
+      <a class="back-link" href="/traces">&larr; Back to traces</a>
+      <h1 id="trace-title" class="page-title">Loading trace&hellip;</h1>
+      <p class="page-subtitle">Span timeline for one captured trace.</p>
+    </header>
+
+    <main class="page-main">
+      <div id="trace-status" class="trace-status" hidden></div>
+
+      <p id="trace-disclaimer" class="trace-disclaimer" hidden>
+        Spans are ordered by completion time, not start time &mdash; <code>EventBusTraceMiddleware</code>
+        records a single completion timestamp (<code>monotonic_ns</code>) per span, not a start-and-end pair.
+        The offsets and marker positions below show each span&rsquo;s position relative to the first span in
+        this trace; they are <strong>not</strong> individual span durations.
+      </p>
+
+      <div id="spans-wrap" class="spans-wrap" hidden>
+        <div id="spans-list" class="spans-list"></div>
+      </div>
+
+      <div id="trace-empty" class="empty-state" hidden>
+        <p class="empty-state-title">No spans found</p>
+        <p class="empty-state-text">This trace has no recorded spans.</p>
+      </div>
+    </main>
+  </div>
+
+  <template id="span-row-template">
+    <article class="span-row">
+      <div class="span-row-top">
+        <span class="span-offset"></span>
+        <span class="span-name"></span>
+        <span class="span-status-code"></span>
+      </div>
+      <div class="span-track">
+        <div class="span-marker"></div>
+      </div>
+      <div class="span-row-bottom">
+        <span class="span-method"></span>
+        <span class="span-route"></span>
+        <code class="span-id"></code>
+      </div>
+    </article>
+  </template>
+
+  <script type="module" src="/static/trace/trace-controller.js"></script>
+</body>
+</html>

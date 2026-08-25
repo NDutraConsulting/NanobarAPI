@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nanobar · NanobarAPI</title>
+  <link rel="stylesheet" href="/static/nanobar/nanobar.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/">Nanobars</a>
+    <a href="/triage">Triage board</a>
+    <a href="/traces">Traces</a>
+  </nav>
+
+  <div class="page">
+    <header class="page-header">
+      <p class="back-link"><a href="/">&larr; All nanobars</a></p>
+      <h1 id="nanobar-title" class="page-title">Loading nanobar&hellip;</h1>
+      <p id="nanobar-subtitle" class="page-subtitle" hidden></p>
+    </header>
+
+    <main class="page-main">
+      <div id="page-status" class="page-status" hidden></div>
+
+      <section id="summary-section" class="summary-section" hidden aria-labelledby="summary-heading">
+        <h2 id="summary-heading" class="section-heading">Nanobar summary</h2>
+        <dl id="summary-grid" class="summary-grid"></dl>
+        <div id="summary-targets" class="summary-targets"></div>
+      </section>
+
+      <section class="bricks-section" aria-labelledby="bricks-heading">
+        <h2 id="bricks-heading" class="section-heading">Bound regression bricks</h2>
+
+        <div id="bricks-status" class="bricks-status" hidden></div>
+
+        <div id="bricks-table-wrap" class="bricks-table-wrap" hidden>
+          <table id="bricks-table" class="bricks-table">
+            <thead>
+              <tr>
+                <th scope="col">Request</th>
+                <th scope="col">Status</th>
+                <th scope="col">Content hash</th>
+                <th scope="col">Review</th>
+              </tr>
+            </thead>
+            <tbody id="bricks-table-body"></tbody>
+          </table>
+        </div>
+
+        <div id="bricks-empty" class="empty-state" hidden>
+          <p class="empty-state-title">No bricks bound to this nanobar yet</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="brick-row-template">
+    <tr class="brick-row">
+      <td class="brick-request">
+        <a class="brick-link">
+          <span class="brick-method"></span>
+          <span class="brick-path"></span>
+        </a>
+      </td>
+      <td class="brick-status-code"></td>
+      <td class="brick-hash"></td>
+      <td><span class="review-pill"></span></td>
+    </tr>
+  </template>
+
+  <script type="module" src="/static/nanobar/nanobar-controller.js"></script>
+</body>
+</html>

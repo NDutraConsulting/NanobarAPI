@@ -4,6 +4,7 @@ import html
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from starlette.responses import HTMLResponse
@@ -15,8 +16,11 @@ from nanobar_api.validation import to_json_schema
 _ENVELOPE_STATUS_SCHEMA = {"type": "string", "enum": ["success", "error", "timeout"]}
 _RESULT_TYPE_SCHEMA = {"type": "string", "enum": ["object", "array", "map"]}
 
-_SWAGGER_JS_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"
-_SWAGGER_CSS_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"
+#: Vendored swagger-ui-dist@5.32.14 (nanobar_api/static/swagger-ui/) — not CDN-loaded, so
+#: `/docs` works offline and isn't subject to an external network call or ad-blocker/proxy
+#: blocking that CDN. Mounted at this path by `NanobarAPI.__init__` whenever docs are enabled.
+SWAGGER_STATIC_DIR = Path(__file__).resolve().parent / "static" / "swagger-ui"
+SWAGGER_STATIC_MOUNT = "/nanobar-static/swagger-ui"
 
 
 @dataclass(frozen=True)
@@ -104,17 +108,24 @@ def get_swagger_ui_html(*, openapi_url: str, title: str) -> HTMLResponse:
     content = f"""<!DOCTYPE html>
 <html>
 <head>
-<link type="text/css" rel="stylesheet" href="{_SWAGGER_CSS_URL}">
+<link type="text/css" rel="stylesheet" href="{SWAGGER_STATIC_MOUNT}/swagger-ui.css">
 <title>{safe_title}</title>
 </head>
 <body>
 <div id="swagger-ui"></div>
-<script src="{_SWAGGER_JS_URL}"></script>
+<script src="{SWAGGER_STATIC_MOUNT}/swagger-ui-bundle.js"></script>
+<script src="{SWAGGER_STATIC_MOUNT}/swagger-ui-standalone-preset.js"></script>
 <script>
-const ui = SwaggerUIBundle({{
-    url: {_html_safe_json(openapi_url)},
-    presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-}})
+window.onload = function() {{
+    const ui = SwaggerUIBundle({{
+        url: {_html_safe_json(openapi_url)},
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+        layout: "StandaloneLayout",
+    }})
+    window.ui = ui;
+}}
 </script>
 </body>
 </html>

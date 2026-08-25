@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brick · NanobarAPI</title>
+  <link rel="stylesheet" href="/static/brick/brick.css" />
+</head>
+<body>
+  <nav class="top-nav" aria-label="Primary">
+    <a href="/">Nanobars</a>
+    <a href="/triage">Triage board</a>
+    <a href="/traces">Traces</a>
+  </nav>
+
+  <div class="page">
+    <header class="page-header">
+      <p class="back-link"><a href="/">&larr; All nanobars</a></p>
+      <h1 id="brick-title" class="page-title">Loading brick&hellip;</h1>
+      <p id="brick-subtitle" class="page-subtitle" hidden></p>
+    </header>
+
+    <main class="page-main">
+      <div id="page-status" class="page-status" hidden></div>
+
+      <div id="brick-detail" class="brick-detail" hidden>
+        <section class="summary-section" aria-labelledby="summary-heading">
+          <div class="summary-top">
+            <h2 id="summary-heading" class="section-heading">Brick summary</h2>
+            <span id="review-pill" class="review-pill"></span>
+          </div>
+
+          <dl id="summary-grid" class="summary-grid">
+            <div class="summary-row">
+              <dt>Brick ID</dt>
+              <dd id="field-brick-id"></dd>
+            </div>
+            <div class="summary-row">
+              <dt>Content hash</dt>
+              <dd><code id="field-content-hash" class="code-inline"></code></dd>
+            </div>
+            <div class="summary-row">
+              <dt>Schema version</dt>
+              <dd id="field-schema-version"></dd>
+            </div>
+            <div class="summary-row">
+              <dt>Brick version</dt>
+              <dd id="field-brick-version"></dd>
+            </div>
+            <div class="summary-row">
+              <dt>Created by</dt>
+              <dd id="field-created-by"></dd>
+            </div>
+            <div class="summary-row">
+              <dt>Source</dt>
+              <dd id="field-source"></dd>
+            </div>
+          </dl>
+
+          <div class="review-controls" aria-labelledby="review-controls-heading">
+            <h3 id="review-controls-heading" class="review-controls-heading">Set review status</h3>
+            <div id="review-buttons" class="review-buttons">
+              <button type="button" class="review-btn" data-status="new">New</button>
+              <button type="button" class="review-btn" data-status="reviewed">Reviewed</button>
+              <button type="button" class="review-btn" data-status="flagged">Flagged</button>
+              <button type="button" class="review-btn" data-status="promoted">Promoted</button>
+            </div>
+            <p id="review-error" class="review-error" role="alert" hidden></p>
+          </div>
+        </section>
+
+        <section class="payload-section" aria-labelledby="request-heading">
+          <h2 id="request-heading" class="section-heading">Request</h2>
+          <pre id="request-json" class="json-block"></pre>
+        </section>
+
+        <section class="payload-section" aria-labelledby="response-heading">
+          <h2 id="response-heading" class="section-heading">Response</h2>
+          <pre id="response-json" class="json-block"></pre>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="/static/brick/brick-controller.js"></script>
+</body>
+</html>

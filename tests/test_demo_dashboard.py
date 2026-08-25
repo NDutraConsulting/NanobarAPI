@@ -299,188 +299,61 @@ def test_api_set_review_status_body_not_an_object(db_path: str, client: TestClie
 
 
 # ------------------------------------------------------------------------------- pages ---
+#
+# Pages are served as static files (no server-side templating or database access) — the
+# page's own JS fetches its data client-side from the JSON API tested above. So these tests
+# only verify routing/serving: the right file comes back, regardless of what's in the db.
 
 
-def test_dashboard_page_empty(client: TestClient) -> None:
+def test_nanobars_page_served(client: TestClient) -> None:
     response = client.get("/")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "No nanobars found" in response.text
+    assert "Nanobars · Nanobar Dashboard" in response.text
 
 
-def test_dashboard_route_alias(client: TestClient) -> None:
+def test_dashboard_route_alias_serves_same_page(client: TestClient) -> None:
     response = client.get("/dashboard")
 
     assert response.status_code == 200
-    assert "Nanobar Dashboard" in response.text
+    assert "Nanobars · Nanobar Dashboard" in response.text
 
 
-def test_dashboard_page_groups_by_target_type(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(
-        conn,
-        _make_nanobar(
-            "nb-multi",
-            [MonitorTargetRef("openapi_operation", "checkout"), MonitorTargetRef("service", "billing")],
-        ),
-    )
-    conn.close()
-
-    response = client.get("/")
-
-    assert response.status_code == 200
-    assert response.text.count('href="/nanobars/nb-multi"') == 2
-    assert "openapi_operation" in response.text
-    assert "service" in response.text
-
-
-def test_dashboard_page_untargeted_bucket(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-untargeted", []))
-    conn.close()
-
-    response = client.get("/")
-
-    assert "(untargeted)" in response.text
-    assert 'href="/nanobars/nb-untargeted"' in response.text
-
-
-def test_nanobar_detail_page_found(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", path="/checkout", method="POST", status_code=201))
-    conn.close()
-    _bind(db_path, "nb-1", "rbrick-1")
-
+def test_nanobar_detail_page_served(client: TestClient) -> None:
     response = client.get("/nanobars/nb-1")
 
     assert response.status_code == 200
-    assert "nb-1" in response.text
-    assert "rbrick-1" in response.text
-    assert "/checkout" in response.text
-    assert "POST" in response.text
-    assert "201" in response.text
-    assert "new" in response.text
+    assert "text/html" in response.headers["content-type"]
+    assert "Nanobar · NanobarAPI" in response.text
 
 
-def test_nanobar_detail_page_with_no_bricks(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-empty"))
-    conn.close()
-
-    response = client.get("/nanobars/nb-empty")
-
-    assert response.status_code == 200
-    assert "No bricks bound" in response.text
-
-
-def test_nanobar_detail_page_not_found(client: TestClient) -> None:
-    response = client.get("/nanobars/does-not-exist")
-
-    assert response.status_code == 404
-    assert "not found" in response.text
-
-
-def test_brick_detail_page_found_with_bound_nanobar(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
-    _bind(db_path, "nb-1", "rbrick-1")
-
+def test_brick_detail_page_served(client: TestClient) -> None:
     response = client.get("/bricks/rbrick-1")
 
     assert response.status_code == 200
-    assert "rbrick-1" in response.text
-    assert 'href="/nanobars/nb-1"' in response.text
-    assert "&quot;ok&quot;: true" in response.text
+    assert "Brick · NanobarAPI" in response.text
 
 
-def test_brick_detail_page_found_unbound(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
-
-    response = client.get("/bricks/rbrick-1")
-
-    assert response.status_code == 200
-    assert "(unbound)" in response.text
-
-
-def test_brick_detail_page_handles_missing_request_response_fields(db_path: str, client: TestClient) -> None:
-    """A brick captured with no method/path/status_code (e.g. a non-HTTP source) must still
-    render, falling back to blanks rather than "None" strings or a crash.
-    """
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-bare", "sha256:bare", method=None, path=None, status_code=None))
-    conn.close()
-
-    response = client.get("/bricks/rbrick-bare")
-
-    assert response.status_code == 200
-    assert "rbrick-bare" in response.text
-
-
-def test_nanobar_detail_page_handles_bricks_with_missing_fields(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-bare", "sha256:bare", method=None, path=None, status_code=None))
-    conn.close()
-    _bind(db_path, "nb-1", "rbrick-bare")
-
-    response = client.get("/nanobars/nb-1")
-
-    assert response.status_code == 200
-    assert "rbrick-bare" in response.text
-
-
-def test_brick_detail_page_not_found(client: TestClient) -> None:
-    response = client.get("/bricks/does-not-exist")
-
-    assert response.status_code == 404
-    assert "not found" in response.text
-
-
-def test_triage_page_groups_by_status_including_unset_defaults_to_new(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-new", "sha256:a"))
-    insert_brick(conn, _make_brick("rbrick-flagged", "sha256:b"))
-    conn.close()
-    set_review_status(connect(db_path), "rbrick-flagged", "flagged", updated_by="alice")
-
+def test_triage_page_served(client: TestClient) -> None:
     response = client.get("/triage")
 
     assert response.status_code == 200
-    text = response.text
-    # Columns render in REVIEW_STATUSES order (new, reviewed, flagged, promoted), so a card
-    # appearing before the "flagged" column's marker is in an earlier column ("new"), and one
-    # appearing after it is in "flagged" or later — enough to prove per-status grouping
-    # without depending on exact DOM structure.
-    flagged_col_start = text.index('data-status="flagged"')
-    assert 'data-brick-id="rbrick-new"' in text
-    assert 'data-brick-id="rbrick-flagged"' in text
-    assert text.index('data-brick-id="rbrick-new"') < flagged_col_start
-    assert text.index('data-brick-id="rbrick-flagged"') > flagged_col_start
+    assert "Triage board · Nanobar Dashboard" in response.text
 
 
-def test_triage_page_empty(client: TestClient) -> None:
-    response = client.get("/triage")
+def test_static_assets_served_for_each_page(client: TestClient) -> None:
+    for page in ("nanobars", "nanobar", "brick", "triage", "traces", "trace"):
+        css = client.get(f"/static/{page}/{page}.css")
+        controller = client.get(f"/static/{page}/{page}-controller.js")
+        api_js = client.get(f"/static/{page}/{page}-api.js")
+        ui_js = client.get(f"/static/{page}/{page}-ui.js")
 
-    assert response.status_code == 200
-    for status in ("new", "reviewed", "flagged", "promoted"):
-        assert f'data-status="{status}"' in response.text
-
-
-def test_static_triage_js_served(client: TestClient) -> None:
-    response = client.get("/static/triage.js")
-
-    assert response.status_code == 200
-    assert "javascript" in response.headers["content-type"]
-    assert "dragstart" in response.text
-    assert "dragover" in response.text
-    assert "drop" in response.text
-    assert "review-status" in response.text
+        assert css.status_code == 200, page
+        assert "css" in css.headers["content-type"], page
+        for asset in (controller, api_js, ui_js):
+            assert asset.status_code == 200, page
+            assert "javascript" in asset.headers["content-type"], page
 
 
 # --------------------------------------------------------------------------- traces api ---
@@ -547,56 +420,23 @@ def test_api_trace_spans_ordered_and_not_found(events_db_path: str, client: Test
 
 
 # ------------------------------------------------------------------------- traces pages ---
+#
+# Same static-serving story as the pages section above — content assertions belong to the
+# API tests; these just confirm the right static file is routed to.
 
 
-def test_traces_list_page_empty(client: TestClient) -> None:
+def test_traces_list_page_served(client: TestClient) -> None:
     response = client.get("/traces")
 
     assert response.status_code == 200
-    assert "No traces captured yet" in response.text
+    assert "Traces · Nanobar Dashboard" in response.text
 
 
-def test_traces_list_page_shows_captured_traces(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
-    try:
-        insert_events(conn, [_make_span_event("evt-1", "tr-1", error=True)])
-    finally:
-        conn.close()
-
-    response = client.get("/traces")
-
-    assert response.status_code == 200
-    assert "tr-1" in response.text
-    assert "error" in response.text
-
-
-def test_trace_detail_page_shows_ordered_spans(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
-    try:
-        insert_events(
-            conn,
-            [
-                _make_span_event("evt-1", "tr-1", monotonic_ns=1_000_000, name="span-one"),
-                _make_span_event("evt-2", "tr-1", monotonic_ns=1_500_000, name="span-two"),
-            ],
-        )
-    finally:
-        conn.close()
-
+def test_trace_detail_page_served(client: TestClient) -> None:
     response = client.get("/traces/tr-1")
 
     assert response.status_code == 200
-    first = response.text.index("span-one")
-    second = response.text.index("span-two")
-    assert first < second
-    assert "0.50 ms" in response.text  # the offset between the two spans
-
-
-def test_trace_detail_page_not_found(client: TestClient) -> None:
-    response = client.get("/traces/does-not-exist")
-
-    assert response.status_code == 404
-    assert "not found" in response.text
+    assert "Trace · Nanobar Dashboard" in response.text
 
 
 # ------------------------------------------------------------------------------ db/app ---
@@ -626,7 +466,7 @@ def test_build_app_without_explicit_db_path_uses_resolve_db_path(
     assert app.state.db_path == override
 
     client = TestClient(app)
-    response = client.get("/")
+    response = client.get("/api/nanobars")
     assert response.status_code == 200
 
 
@@ -656,14 +496,14 @@ def test_build_app_without_explicit_events_db_path_uses_resolve_events_db_path(
 
 def test_dashboard_app_handles_not_yet_existing_database_directory(tmp_path: Path) -> None:
     """The db path's parent directory doesn't exist yet (mirrors demo/data/ before the seed
-    script has ever run) — the app must still show an empty dashboard, not crash.
+    script has ever run) — the app must still respond, not crash.
     """
     nested_db_path = str(tmp_path / "not-yet-created" / "regression_bricks.db")
     app = build_app(db_path=nested_db_path)
     client = TestClient(app)
 
-    response = client.get("/")
+    response = client.get("/api/nanobars")
 
     assert response.status_code == 200
-    assert "No nanobars found" in response.text
+    assert response.json()["result"]["data"] == []
     assert Path(nested_db_path).exists()

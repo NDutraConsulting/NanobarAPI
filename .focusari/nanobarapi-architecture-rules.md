@@ -107,15 +107,33 @@ isn't a natural fit for what a brick actually is.
 **Built as demo tooling, not yet a shipped framework feature:** `demo/dashboard/` (a small
 NanobarAPI app dogfooding this project's own `Controller`/`Service`/`Repository`/envelope
 conventions) implements exactly this drill-down — `/dashboard`, `/nanobars/{id}`,
-`/bricks/{id}`, `/triage`, plus a matching JSON API under `/api/...` using the envelope
-contract. `demo/seed_kahnban_bricks.py` drives real `focusari_kahnban` traffic (including its
-cross-board-move rejection and position/reorder paths — this project's own history of real bugs
-in that exact logic) through the full capture pipeline to populate it with genuine data, not
-synthetic fixtures. Verified live end-to-end (dashboard → nanobar → brick → a real
-new→flagged review-status transition, correctly rejecting an invalid status) — the one thing
-*not* independently confirmed is the drag gesture itself in a rendered browser, since this
-session has no browser tool; the `fetch()` call it triggers was verified directly instead.
-Both remain demo/proof tooling under `demo/`, not part of the `nanobar_api` package itself.
+`/bricks/{id}`, `/triage`, `/traces`, `/traces/{trace_id}` — plus a matching JSON API under
+`/api/...` using the envelope contract. `demo/seed_kahnban_bricks.py` drives real
+`focusari_kahnban` traffic (including its cross-board-move rejection and position/reorder
+paths — this project's own history of real bugs in that exact logic) through the full capture
+pipeline to populate it with genuine data, not synthetic fixtures. Verified live end-to-end
+(dashboard → nanobar → brick → a real new→flagged review-status transition, correctly
+rejecting an invalid status). Both remain demo/proof tooling under `demo/`, not part of the
+`nanobar_api` package itself.
+
+**Frontend: static HTML5/CSS/JS, domain-driven, per-page bundles — not server-rendered.**
+`demo/dashboard/pages.py` route handlers only return `starlette.responses.FileResponse` for a
+static `.html` file under `demo/web/{page}/`; there is no Python-side HTML templating (an
+earlier `demo/dashboard/templates.py` that generated HTML via f-strings was built, then
+discarded and deleted — the correct pattern was already established by `focusari_kahnban`'s own
+frontend and should have been followed from the start). Each of the six pages
+(`nanobars`, `nanobar`, `brick`, `triage`, `traces`, `trace`) is a self-contained bundle of five
+files under `demo/web/{page}/`: `{page}.html` (static markup only, links `{page}.css`, loads
+`{page}-controller.js` as `type="module"`), `{page}.css` (shared `:root` design tokens +
+page-specific styles), `{page}-api.js` (pure `fetch` wrappers against `/api/...`, zero DOM
+access), `{page}-ui.js` (pure DOM manipulation, zero fetch calls, exports render/show/hide
+functions), `{page}-controller.js` (the only file with top-level "on load" logic — imports the
+other two, wires events, orchestrates fetch → check envelope status → render, ends with
+`init()`). Assets are served by mounting `starlette.staticfiles.StaticFiles` at `/static` over
+`demo/web/`. All content (nanobar/brick/review-status/trace data) is fetched client-side from
+the unchanged `/api/...` JSON API — the page routes never touch the database. Verified live:
+all six page routes and all 24 static assets (4 files × 6 pages) return 200 with correct
+`content-type`, and a review-status POST round-trips correctly against the running server.
 
 **Trace/span review — a minimal timeline, not a duplicated Jaeger.** `demo/dashboard/` also
 has `/traces` and `/traces/{trace_id}`, reading `events.db`'s `"trace"` channel via

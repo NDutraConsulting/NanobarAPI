@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traces · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/traces/traces.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/">Nanobars</a>
+      <a href="/triage">Triage board</a>
+      <a href="/traces" aria-current="page">Traces</a>
+    </nav>
+
+    <header class="page-header">
+      <h1 class="page-title">Traces</h1>
+      <p class="page-subtitle">Captured request traces, most-recently-completed first.</p>
+    </header>
+
+    <main class="page-main">
+      <div id="traces-status" class="traces-status" hidden></div>
+
+      <div id="traces-table-wrap" class="table-wrap" hidden>
+        <table class="traces-table">
+          <thead>
+            <tr>
+              <th scope="col">Trace ID</th>
+              <th scope="col">Spans</th>
+              <th scope="col">First recorded</th>
+              <th scope="col">Last recorded</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="traces-table-body"></tbody>
+        </table>
+      </div>
+
+      <div id="traces-empty" class="empty-state" hidden>
+        <p class="empty-state-title">No traces captured yet</p>
+        <p class="empty-state-text">Traces will show up here once requests have been recorded.</p>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="/static/traces/traces-controller.js"></script>
+</body>
+</html>

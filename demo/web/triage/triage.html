@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Triage board · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/triage/triage.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/">Nanobars</a>
+      <a href="/triage" aria-current="page">Triage board</a>
+      <a href="/traces">Traces</a>
+    </nav>
+
+    <header class="page-header">
+      <h1 class="page-title">Brick Review Triage</h1>
+      <p class="page-subtitle">Drag a brick between columns to change its review status.</p>
+    </header>
+
+    <div id="toast" class="toast" hidden role="alert"></div>
+
+    <main class="page-main">
+      <div id="board-status" class="board-status" hidden></div>
+
+      <div id="board" class="board" hidden>
+        <section class="column" data-status="new">
+          <header class="column-header">
+            <h2 class="column-title">New</h2>
+            <span class="column-count" id="count-new">0</span>
+          </header>
+          <div class="cards" id="cards-new" data-status="new"></div>
+        </section>
+
+        <section class="column" data-status="reviewed">
+          <header class="column-header">
+            <h2 class="column-title">Reviewed</h2>
+            <span class="column-count" id="count-reviewed">0</span>
+          </header>
+          <div class="cards" id="cards-reviewed" data-status="reviewed"></div>
+        </section>
+
+        <section class="column" data-status="flagged">
+          <header class="column-header">
+            <h2 class="column-title">Flagged</h2>
+            <span class="column-count" id="count-flagged">0</span>
+          </header>
+          <div class="cards" id="cards-flagged" data-status="flagged"></div>
+        </section>
+
+        <section class="column" data-status="promoted">
+          <header class="column-header">
+            <h2 class="column-title">Promoted</h2>
+            <span class="column-count" id="count-promoted">0</span>
+          </header>
+          <div class="cards" id="cards-promoted" data-status="promoted"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <template id="card-template">
+    <article class="card" draggable="true">
+      <div class="card-top">
+        <span class="card-method"></span>
+        <span class="card-path"></span>
+      </div>
+      <div class="card-id"></div>
+      <div class="card-hash"></div>
+      <p class="card-error" hidden></p>
+    </article>
+  </template>
+
+  <script type="module" src="/static/triage/triage-controller.js"></script>
+</body>
+</html>

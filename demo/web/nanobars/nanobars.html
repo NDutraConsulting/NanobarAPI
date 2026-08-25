@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nanobars · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/nanobars/nanobars.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/" aria-current="page">Nanobars</a>
+      <a href="/triage">Triage board</a>
+      <a href="/traces">Traces</a>
+    </nav>
+
+    <header class="page-header">
+      <h1 class="page-title">Nanobar Dashboard</h1>
+      <p class="page-subtitle">All nanobars, grouped by monitored target type.</p>
+    </header>
+
+    <main class="page-main">
+      <div id="nanobars-status" class="nanobars-status" hidden></div>
+
+      <div id="nanobars-groups" class="nanobars-groups" hidden></div>
+
+      <div id="nanobars-empty" class="empty-state" hidden>
+        <p class="empty-state-title">No nanobars found yet</p>
+        <p class="empty-state-text">Nanobars will show up here once they've been generated.</p>
+      </div>
+    </main>
+  </div>
+
+  <template id="target-group-template">
+    <section class="target-group">
+      <header class="target-group-header">
+        <h2 class="target-group-title"></h2>
+        <span class="target-group-count"></span>
+      </header>
+      <ul class="nanobar-list"></ul>
+    </section>
+  </template>
+
+  <template id="nanobar-item-template">
+    <li class="nanobar-item">
+      <a class="nanobar-link">
+        <span class="nanobar-id"></span>
+        <span class="nanobar-system"></span>
+        <span class="nanobar-scenario"></span>
+      </a>
+    </li>
+  </template>
+
+  <script type="module" src="/static/nanobars/nanobars-controller.js"></script>
+</body>
+</html>

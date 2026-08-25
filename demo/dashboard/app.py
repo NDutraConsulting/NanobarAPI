@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from nanobar_api import NanobarAPI
 
 from . import api, pages
 from .db import resolve_db_path
 from .events_db import resolve_db_path as resolve_events_db_path
+from .pages import WEB_DIR
 
 
 def build_app(db_path: str | None = None, events_db_path: str | None = None) -> NanobarAPI:
@@ -31,20 +33,20 @@ def build_app(db_path: str | None = None, events_db_path: str | None = None) -> 
     app = NanobarAPI(
         title="Nanobar Dashboard",
         routes=[
-            Route("/", pages.dashboard, methods=["GET"]),
-            Route("/dashboard", pages.dashboard, methods=["GET"]),
+            Route("/", pages.nanobars, methods=["GET"]),
+            Route("/dashboard", pages.nanobars, methods=["GET"]),
             Route("/nanobars/{nanobar_id}", pages.nanobar_detail, methods=["GET"]),
             Route("/bricks/{brick_id}", pages.brick_detail, methods=["GET"]),
             Route("/triage", pages.triage_board, methods=["GET"]),
             Route("/traces", pages.traces_list, methods=["GET"]),
             Route("/traces/{trace_id}", pages.trace_detail, methods=["GET"]),
-            Route("/static/triage.js", pages.triage_js, methods=["GET"]),
             Route("/api/nanobars", api.list_nanobars, methods=["GET"]),
             Route("/api/nanobars/{nanobar_id}/bricks", api.nanobar_bricks, methods=["GET"]),
             Route("/api/bricks/{brick_id}", api.brick_detail, methods=["GET"]),
             Route("/api/bricks/{brick_id}/review-status", api.set_review_status, methods=["PATCH", "POST"]),
             Route("/api/traces", api.list_traces, methods=["GET"]),
             Route("/api/traces/{trace_id}/spans", api.trace_spans, methods=["GET"]),
+            Mount("/static", app=StaticFiles(directory=WEB_DIR), name="static"),
         ],
     )
     app.state.db_path = resolved_db_path

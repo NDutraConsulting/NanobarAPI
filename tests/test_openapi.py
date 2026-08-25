@@ -92,6 +92,62 @@ def test_docs_route_served_by_default() -> None:
     assert "/openapi.json" in response.text
 
 
+def test_docs_page_references_vendored_assets_not_a_cdn() -> None:
+    """Swagger UI's JS/CSS must be served locally (vendored) — see openapi.py's
+    SWAGGER_STATIC_MOUNT — not loaded from an external CDN, and both scripts Swagger UI
+    actually needs (bundle + standalone preset) must be referenced, or `SwaggerUIBundle`
+    renders nothing.
+    """
+    client = TestClient(_build_app())
+
+    response = client.get("/docs")
+
+    assert "cdn.jsdelivr.net" not in response.text
+    assert "/nanobar-static/swagger-ui/swagger-ui-bundle.js" in response.text
+    assert "/nanobar-static/swagger-ui/swagger-ui-standalone-preset.js" in response.text
+    assert "/nanobar-static/swagger-ui/swagger-ui.css" in response.text
+
+
+def test_docs_page_swagger_config_is_actually_renderable() -> None:
+    """swagger-ui-standalone-preset.js attaches itself as the top-level global
+    `SwaggerUIStandalonePreset`, not `SwaggerUIBundle.SwaggerUIStandalonePreset` — referencing
+    the wrong one silently puts `undefined` in the presets list and nothing renders. `dom_id`
+    is also required or SwaggerUIBundle has nowhere to mount. Both were real bugs found by
+    actually loading the page, not just checking it returns 200.
+    """
+    client = TestClient(_build_app())
+
+    response = client.get("/docs")
+
+    assert "SwaggerUIBundle.SwaggerUIStandalonePreset" not in response.text
+    assert "presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset]" in response.text
+    assert 'dom_id: "#swagger-ui"' in response.text
+
+
+def test_vendored_swagger_ui_assets_are_served() -> None:
+    client = TestClient(_build_app())
+
+    bundle = client.get("/nanobar-static/swagger-ui/swagger-ui-bundle.js")
+    preset = client.get("/nanobar-static/swagger-ui/swagger-ui-standalone-preset.js")
+    css = client.get("/nanobar-static/swagger-ui/swagger-ui.css")
+
+    assert bundle.status_code == 200
+    assert "javascript" in bundle.headers["content-type"]
+    assert preset.status_code == 200
+    assert "javascript" in preset.headers["content-type"]
+    assert css.status_code == 200
+    assert "css" in css.headers["content-type"]
+
+
+def test_vendored_swagger_ui_assets_not_mounted_when_docs_disabled() -> None:
+    app = NanobarAPI(routes=[], docs_url=None)
+    client = TestClient(app)
+
+    response = client.get("/nanobar-static/swagger-ui/swagger-ui-bundle.js")
+
+    assert response.status_code == 404
+
+
 def test_docs_and_openapi_can_be_disabled() -> None:
     app = NanobarAPI(routes=[], openapi_url=None)
     client = TestClient(app)
