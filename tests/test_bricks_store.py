@@ -25,6 +25,7 @@ from nanobar_api.bricks.store import (
     list_nanobars,
     remove_brick_tag,
     set_brick_scenario,
+    set_regression_weight,
     set_review_status,
     update_nanobar,
 )
@@ -480,6 +481,7 @@ def test_update_nanobar_overwrites_human_navigation_fields(tmp_path: Path) -> No
             scenario_description="Fetches a single order by id.",
             component_source_description="checkout.repository",
             domain="checkout",
+            criticality=0.5,
         )
         fetched = get_nanobar(conn, "nb-1")
 
@@ -497,9 +499,9 @@ def test_update_nanobar_with_no_fields_clears_them(tmp_path: Path) -> None:
     conn = connect(db_path)
     try:
         insert_nanobar(conn, _make_nanobar("nb-1"))
-        update_nanobar(conn, "nb-1", label="X")
+        update_nanobar(conn, "nb-1", label="X", criticality=0.5)
 
-        update_nanobar(conn, "nb-1")  # no kwargs -- overwrites everything with None
+        update_nanobar(conn, "nb-1", criticality=0.5)  # no other kwargs -- overwrites them with None
         fetched = get_nanobar(conn, "nb-1")
 
         assert fetched is not None
@@ -724,5 +726,38 @@ def test_brick_tags_removed_when_brick_deleted_via_cascade(tmp_path: Path) -> No
             conn.execute("DELETE FROM regression_bricks WHERE regression_brick_id = 'rbrick-1'")
 
         assert get_tags_for_brick(conn, "rbrick-1") == []
+    finally:
+        conn.close()
+
+
+def test_nanobar_criticality_defaults_and_round_trips(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_nanobar(conn, _make_nanobar("nb-1"))
+        fetched = get_nanobar(conn, "nb-1")
+        assert fetched is not None
+        assert fetched.criticality == 0.5
+
+        update_nanobar(conn, "nb-1", criticality=0.9)
+        fetched = get_nanobar(conn, "nb-1")
+        assert fetched is not None
+        assert fetched.criticality == 0.9
+    finally:
+        conn.close()
+
+
+def test_set_regression_weight_updates_only_that_field(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "regression_bricks.db")
+    conn = connect(db_path)
+    try:
+        insert_nanobar(conn, _make_nanobar("nb-1"))
+
+        set_regression_weight(conn, "nb-1", 0.73)
+
+        fetched = get_nanobar(conn, "nb-1")
+        assert fetched is not None
+        assert fetched.regression_weight == 0.73
+        assert fetched.criticality == 0.5  # unaffected
     finally:
         conn.close()

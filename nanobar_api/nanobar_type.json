@@ -1,0 +1,68 @@
+{
+  "api-response": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "invalid_input": {"weight": 0.6, "required": true, "synthesizable": true},
+      "validation_error": {"weight": 0.6, "required": false, "synthesizable": true},
+      "unauthorized": {"weight": 0.7, "required": false, "synthesizable": true},
+      "forbidden": {"weight": 0.65, "required": false, "synthesizable": true},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "validator-request-response": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "invalid_input": {"weight": 0.6, "required": true, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "controller-request-response": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "unauthorized": {"weight": 0.7, "required": false, "synthesizable": true},
+      "forbidden": {"weight": 0.65, "required": false, "synthesizable": true},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "conflict": {"weight": 0.55, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "service-request-response": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "conflict": {"weight": 0.55, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "orm-request-response": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "conflict": {"weight": 0.55, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "event-to-subscriber": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "api-to-db": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "conflict": {"weight": 0.55, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
+  "controller-to-db": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "not_found": {"weight": 0.5, "required": false, "synthesizable": true},
+      "conflict": {"weight": 0.55, "required": false, "synthesizable": true},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  }
+}

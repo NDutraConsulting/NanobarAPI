@@ -58,7 +58,7 @@ export function renderTraces(traces) {
     const idCell = document.createElement("td");
     const idLink = document.createElement("a");
     idLink.className = "trace-id-link";
-    idLink.href = `/traces/${encodeURIComponent(trace.trace_id)}`;
+    idLink.href = `/admin/nanobar/traces/${encodeURIComponent(trace.trace_id)}`;
     idLink.textContent = trace.trace_id;
     idCell.appendChild(idLink);
 

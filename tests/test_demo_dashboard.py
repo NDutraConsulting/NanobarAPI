@@ -12,6 +12,7 @@ from demo.dashboard.events_db import (
     DEFAULT_DB_PATH as EVENTS_DEFAULT_DB_PATH,
     resolve_db_path as resolve_events_db_path,
 )
+from nanobar_api.admin_auth import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 from nanobar_api.bricks.schema import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick
 from nanobar_api.bricks.store import bind_brick_to_nanobar, connect, insert_brick, insert_nanobar, set_review_status
 from nanobar_api.eventbus.events import Event
@@ -25,6 +26,7 @@ def _make_brick(
     method: str | None = "GET",
     path: str | None = "/checkout",
     status_code: int | None = 200,
+    regression_scenario_type: str | None = None,
 ) -> RegressionBrick:
     return RegressionBrick(
         regression_brick_id=brick_id,
@@ -35,6 +37,7 @@ def _make_brick(
         response={"status_code": status_code, "payload": {"ok": True}},
         content_hash=content_hash,
         created_by="test",
+        regression_scenario_type=regression_scenario_type,
     )
 
 
@@ -109,6 +112,22 @@ def _make_span_event(
     )
 
 
+def _authenticate(test_client: TestClient) -> None:
+    """Drives the real `/admin/login` flow against `test_client` -- not a bypass, the actual
+    `GET` (issues session + CSRF cookies) then `POST` (verifies the username/password against
+    `SQLiteAdminUserStore`'s seeded `admin`/`changeme123` account, authenticates the session)
+    round trip. The CSRF token is set as a *default* header on the client (`httpx.Client.headers`
+    applies to every subsequent request), so callers' own POST/PATCH/DELETE calls never need to
+    attach it individually.
+    """
+    test_client.get("/admin/login")
+    test_client.headers["x-nanobar-csrf-token"] = test_client.cookies["nanobar_csrftoken"]
+    login_response = test_client.post(
+        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+    )
+    assert login_response.status_code == 200
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     return str(tmp_path / "regression_bricks.db")
@@ -120,15 +139,133 @@ def events_db_path(tmp_path: Path) -> str:
 
 
 @pytest.fixture
-def client(db_path: str, events_db_path: str) -> TestClient:
-    return TestClient(build_app(db_path=db_path, events_db_path=events_db_path))
+def admin_db_path(tmp_path: Path) -> str:
+    return str(tmp_path / "admin.db")
+
+
+@pytest.fixture
+def client(db_path: str, events_db_path: str, admin_db_path: str) -> TestClient:
+    test_client = TestClient(build_app(db_path=db_path, events_db_path=events_db_path, admin_db_path=admin_db_path))
+    _authenticate(test_client)
+    return test_client
+
+
+# ---------------------------------------------------------------------- admin auth wiring ---
+#
+# The unit-level behavior of session_protected()/CSRFMiddleware/SQLiteSessionBackend is covered
+# by tests/test_admin_auth.py. These verify the *real app* is actually wired up to use them --
+# an unauthenticated request to the real /admin/nanobar/* mount really is gated, and the real
+# /admin/login route really does establish and authenticate a session end to end.
+
+
+def _unauthenticated_client(db_path: str, events_db_path: str, admin_db_path: str) -> TestClient:
+    return TestClient(
+        build_app(db_path=db_path, events_db_path=events_db_path, admin_db_path=admin_db_path),
+        follow_redirects=False,
+    )
+
+
+def test_unauthenticated_dashboard_request_redirects_to_login(
+    db_path: str, events_db_path: str, admin_db_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+
+    response = client.get("/admin/nanobar/dashboard")
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/admin/login"
+
+
+def test_unauthenticated_api_request_gets_401_envelope(db_path: str, events_db_path: str, admin_db_path: str) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+
+    response = client.get("/admin/nanobar/api/nanobars")
+
+    assert response.status_code == 401
+    assert response.json()["status"] == "error"
+
+
+def test_login_get_serves_the_login_page_and_issues_cookies(
+    db_path: str, events_db_path: str, admin_db_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+
+    response = client.get("/admin/login")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "nanobar_admin_session" in response.cookies
+    assert "nanobar_csrftoken" in response.cookies
+
+
+def test_login_post_without_a_prior_get_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+
+    # No prior GET -> no session cookie, no CSRF cookie/header -- CSRFMiddleware rejects first.
+    response = client.post(
+        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+    )
+
+    assert response.status_code == 403
+
+
+def test_login_post_with_wrong_password_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client.get("/admin/login")
+    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+
+    response = client.post("/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": "wrong-password"})
+
+    assert response.status_code == 401
+    # A wrong-password attempt must not authenticate the session -- confirmed by a follow-up
+    # request still being gated, not just by this response's own status code.
+    still_gated = client.get("/admin/nanobar/api/nanobars")
+    assert still_gated.status_code == 401
+
+
+def test_login_post_with_unknown_username_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client.get("/admin/login")
+    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+
+    response = client.post("/admin/login", json={"username": "not-a-real-user", "password": DEFAULT_ADMIN_PASSWORD})
+
+    assert response.status_code == 401
+
+
+def test_login_post_missing_password_field_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client.get("/admin/login")
+    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+
+    response = client.post("/admin/login", json={"username": DEFAULT_ADMIN_USERNAME})
+
+    assert response.status_code == 400
+
+
+def test_full_login_flow_grants_access_to_the_gated_dashboard(
+    db_path: str, events_db_path: str, admin_db_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+
+    client.get("/admin/login")
+    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+    login_response = client.post(
+        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+    )
+
+    assert login_response.status_code == 200
+    assert login_response.json()["result"]["data"]["redirect"] == "/admin/app/dashboard"
+
+    dashboard_response = client.get("/admin/nanobar/dashboard")
+    assert dashboard_response.status_code == 200
 
 
 # --------------------------------------------------------------------------------- api ---
 
 
 def test_api_list_nanobars_empty(client: TestClient) -> None:
-    response = client.get("/api/nanobars")
+    response = client.get("/admin/nanobar/api/nanobars")
 
     assert response.status_code == 200
     body = response.json()
@@ -142,7 +279,7 @@ def test_api_list_nanobars_returns_all(db_path: str, client: TestClient) -> None
     insert_nanobar(conn, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
     conn.close()
 
-    response = client.get("/api/nanobars")
+    response = client.get("/admin/nanobar/api/nanobars")
 
     ids = {n["nanobar_id"] for n in response.json()["result"]["data"]}
     assert ids == {"nb-route", "nb-service"}
@@ -154,14 +291,14 @@ def test_api_list_nanobars_filters_by_target_type(db_path: str, client: TestClie
     insert_nanobar(conn, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
     conn.close()
 
-    response = client.get("/api/nanobars", params={"target_type": "service"})
+    response = client.get("/admin/nanobar/api/nanobars", params={"target_type": "service"})
 
     data = response.json()["result"]["data"]
     assert [n["nanobar_id"] for n in data] == ["nb-service"]
 
 
 def test_api_nanobar_bricks_not_found(client: TestClient) -> None:
-    response = client.get("/api/nanobars/does-not-exist/bricks")
+    response = client.get("/admin/nanobar/api/nanobars/does-not-exist/bricks")
 
     assert response.status_code == 404
     body = response.json()
@@ -179,7 +316,7 @@ def test_api_nanobar_bricks_includes_review_status_defaulting_to_new(db_path: st
     _bind(db_path, "nb-1", "rbrick-2")
     set_review_status(connect(db_path), "rbrick-2", "flagged", updated_by="alice")
 
-    response = client.get("/api/nanobars/nb-1/bricks")
+    response = client.get("/admin/nanobar/api/nanobars/nb-1/bricks")
 
     assert response.status_code == 200
     data = {b["regression_brick_id"]: b for b in response.json()["result"]["data"]}
@@ -187,12 +324,49 @@ def test_api_nanobar_bricks_includes_review_status_defaulting_to_new(db_path: st
     assert data["rbrick-2"]["review_status"]["status"] == "flagged"
 
 
+def test_api_nanobar_coverage_gaps_not_found(client: TestClient) -> None:
+    response = client.get("/admin/nanobar/api/nanobars/does-not-exist/coverage-gaps")
+
+    assert response.status_code == 404
+
+
+def test_api_nanobar_coverage_gaps_lists_missing_required_scenarios(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))  # nanobar_type="api-response"
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    conn.close()
+    _bind(db_path, "nb-1", "rbrick-1")
+
+    response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
+
+    assert response.status_code == 200
+    gaps = response.json()["result"]["data"]
+    # "api-response" requires success/invalid_input/server_error -- only success is covered.
+    assert set(gaps) == {"invalid_input", "server_error"}
+
+
+def test_api_nanobar_coverage_gaps_empty_when_fully_covered(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    insert_brick(conn, _make_brick("rbrick-2", "sha256:two", regression_scenario_type="invalid_input"))
+    insert_brick(conn, _make_brick("rbrick-3", "sha256:three", regression_scenario_type="server_error"))
+    conn.close()
+    _bind(db_path, "nb-1", "rbrick-1")
+    _bind(db_path, "nb-1", "rbrick-2")
+    _bind(db_path, "nb-1", "rbrick-3")
+
+    response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
+
+    assert response.json()["result"]["data"] == []
+
+
 def test_api_brick_detail_found(db_path: str, client: TestClient) -> None:
     conn = connect(db_path)
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.get("/api/bricks/rbrick-1")
+    response = client.get("/admin/nanobar/api/bricks/rbrick-1")
 
     assert response.status_code == 200
     body = response.json()
@@ -204,7 +378,7 @@ def test_api_brick_detail_found(db_path: str, client: TestClient) -> None:
 
 
 def test_api_brick_detail_not_found(client: TestClient) -> None:
-    response = client.get("/api/bricks/does-not-exist")
+    response = client.get("/admin/nanobar/api/bricks/does-not-exist")
 
     assert response.status_code == 404
     body = response.json()
@@ -217,7 +391,7 @@ def test_api_set_review_status_valid(db_path: str, client: TestClient) -> None:
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/review-status", json={"status": "flagged"})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "flagged"})
 
     assert response.status_code == 200
     body = response.json()
@@ -226,7 +400,7 @@ def test_api_set_review_status_valid(db_path: str, client: TestClient) -> None:
     assert body["result"]["data"]["updated_by"] == "dashboard"
 
     # And it actually persisted.
-    followup = client.get("/api/bricks/rbrick-1")
+    followup = client.get("/admin/nanobar/api/bricks/rbrick-1")
     assert followup.json()["result"]["data"]["review_status"]["status"] == "flagged"
 
 
@@ -235,7 +409,7 @@ def test_api_set_review_status_via_patch(db_path: str, client: TestClient) -> No
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.patch("/api/bricks/rbrick-1/review-status", json={"status": "reviewed"})
+    response = client.patch("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "reviewed"})
 
     assert response.status_code == 200
     assert response.json()["result"]["data"]["status"] == "reviewed"
@@ -246,7 +420,7 @@ def test_api_set_review_status_invalid_status_value(db_path: str, client: TestCl
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/review-status", json={"status": "bogus"})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "bogus"})
 
     assert response.status_code == 400
     body = response.json()
@@ -255,7 +429,7 @@ def test_api_set_review_status_invalid_status_value(db_path: str, client: TestCl
 
 
 def test_api_set_review_status_brick_not_found(client: TestClient) -> None:
-    response = client.post("/api/bricks/does-not-exist/review-status", json={"status": "flagged"})
+    response = client.post("/admin/nanobar/api/bricks/does-not-exist/review-status", json={"status": "flagged"})
 
     assert response.status_code == 404
     assert response.json()["status"] == "error"
@@ -267,7 +441,7 @@ def test_api_set_review_status_malformed_json_body(db_path: str, client: TestCli
     conn.close()
 
     response = client.post(
-        "/api/bricks/rbrick-1/review-status",
+        "/admin/nanobar/api/bricks/rbrick-1/review-status",
         content=b"{not valid json",
         headers={"content-type": "application/json"},
     )
@@ -281,7 +455,7 @@ def test_api_set_review_status_missing_status_field(db_path: str, client: TestCl
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/review-status", json={})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={})
 
     assert response.status_code == 400
     assert "status" in response.json()["msg"]
@@ -292,7 +466,7 @@ def test_api_set_review_status_body_not_an_object(db_path: str, client: TestClie
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/review-status", json=["flagged"])
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json=["flagged"])
 
     assert response.status_code == 400
     assert "status" in response.json()["msg"]
@@ -303,7 +477,7 @@ def test_api_list_nanobars_includes_type_and_navigation_fields(db_path: str, cli
     insert_nanobar(conn, _make_nanobar("nb-1"))
     conn.close()
 
-    data = client.get("/api/nanobars").json()["result"]["data"]
+    data = client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]
 
     assert data[0]["nanobar_type"] == "api-response"
     assert data[0]["label"] is None
@@ -316,7 +490,7 @@ def test_api_brick_detail_includes_scenario_type_scenario_and_tags(db_path: str,
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one", status_code=404))
     conn.close()
 
-    data = client.get("/api/bricks/rbrick-1").json()["result"]["data"]
+    data = client.get("/admin/nanobar/api/bricks/rbrick-1").json()["result"]["data"]
 
     assert data["regression_scenario_type"] is None  # store round-trip only -- not classified here
     assert data["scenario"] == {
@@ -333,12 +507,12 @@ def test_api_update_nanobar_partial_update(db_path: str, client: TestClient) -> 
     insert_nanobar(conn, _make_nanobar("nb-1"))
     conn.close()
 
-    first = client.patch("/api/nanobars/nb-1", json={"label": "Get order"})
+    first = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
     assert first.status_code == 200
     assert first.json()["result"]["data"]["label"] == "Get order"
 
     # Second call only sets scenario_description -- label from the first call must survive.
-    second = client.patch("/api/nanobars/nb-1", json={"scenario_description": "Fetches an order."})
+    second = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"scenario_description": "Fetches an order."})
 
     assert second.status_code == 200
     data = second.json()["result"]["data"]
@@ -347,7 +521,7 @@ def test_api_update_nanobar_partial_update(db_path: str, client: TestClient) -> 
 
 
 def test_api_update_nanobar_not_found(client: TestClient) -> None:
-    response = client.patch("/api/nanobars/does-not-exist", json={"label": "X"})
+    response = client.patch("/admin/nanobar/api/nanobars/does-not-exist", json={"label": "X"})
 
     assert response.status_code == 404
     assert response.json()["status"] == "error"
@@ -358,7 +532,7 @@ def test_api_update_nanobar_rejects_non_string_field(db_path: str, client: TestC
     insert_nanobar(conn, _make_nanobar("nb-1"))
     conn.close()
 
-    response = client.patch("/api/nanobars/nb-1", json={"label": 123})
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": 123})
 
     assert response.status_code == 400
     assert "label" in response.json()["msg"]
@@ -370,7 +544,7 @@ def test_api_update_nanobar_rejects_malformed_json(db_path: str, client: TestCli
     conn.close()
 
     response = client.patch(
-        "/api/nanobars/nb-1", content=b"{not valid json", headers={"content-type": "application/json"}
+        "/admin/nanobar/api/nanobars/nb-1", content=b"{not valid json", headers={"content-type": "application/json"}
     )
 
     assert response.status_code == 400
@@ -382,7 +556,88 @@ def test_api_update_nanobar_rejects_body_not_an_object(db_path: str, client: Tes
     insert_nanobar(conn, _make_nanobar("nb-1"))
     conn.close()
 
-    response = client.patch("/api/nanobars/nb-1", json=["label"])
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json=["label"])
+
+    assert response.status_code == 400
+
+
+def test_api_update_nanobar_sets_criticality(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 0.9})
+
+    assert response.status_code == 200
+    assert response.json()["result"]["data"]["criticality"] == 0.9
+
+
+def test_api_update_nanobar_criticality_defaults_to_current_value_when_omitted(
+    db_path: str, client: TestClient
+) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 0.8})
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
+
+    assert response.json()["result"]["data"]["criticality"] == 0.8
+
+
+def test_api_update_nanobar_criticality_change_recomputes_regression_weight(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    conn.close()
+    _bind(db_path, "nb-1", "rbrick-1")
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 1.0})
+
+    # "api-response" taxonomy: success(1.0)+invalid_input(0.6)+server_error(0.3) required,
+    # total 1.9 -- only "success" covered here.
+    assert response.json()["result"]["data"]["regression_weight"] == pytest.approx((1.0 / 1.9) * 1.0)
+
+
+def test_api_update_nanobar_without_criticality_change_does_not_recompute_weight(
+    db_path: str, client: TestClient
+) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
+
+    assert response.json()["result"]["data"]["regression_weight"] == 0.5  # unchanged placeholder
+
+
+def test_api_update_nanobar_rejects_criticality_out_of_range(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 1.5})
+
+    assert response.status_code == 400
+    assert "criticality" in response.json()["msg"]
+
+
+def test_api_update_nanobar_rejects_criticality_bool(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": True})
+
+    assert response.status_code == 400
+
+
+def test_api_update_nanobar_rejects_criticality_non_number(db_path: str, client: TestClient) -> None:
+    conn = connect(db_path)
+    insert_nanobar(conn, _make_nanobar("nb-1"))
+    conn.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": "high"})
 
     assert response.status_code == 400
 
@@ -392,13 +647,17 @@ def test_api_set_brick_scenario_partial_update(db_path: str, client: TestClient)
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    first = client.post("/api/bricks/rbrick-1/scenario", json={"regression_scenario_label": "Order not found"})
+    first = client.post(
+        "/admin/nanobar/api/bricks/rbrick-1/scenario", json={"regression_scenario_label": "Order not found"}
+    )
     assert first.status_code == 200
     assert first.json()["result"]["data"]["regression_scenario_label"] == "Order not found"
     assert first.json()["result"]["data"]["updated_by"] == "dashboard"
 
     # Second call (via PATCH this time) only sets description -- label must survive.
-    second = client.patch("/api/bricks/rbrick-1/scenario", json={"description": "The order id does not exist."})
+    second = client.patch(
+        "/admin/nanobar/api/bricks/rbrick-1/scenario", json={"description": "The order id does not exist."}
+    )
 
     assert second.status_code == 200
     data = second.json()["result"]["data"]
@@ -406,12 +665,12 @@ def test_api_set_brick_scenario_partial_update(db_path: str, client: TestClient)
     assert data["description"] == "The order id does not exist."
 
     # And it actually persisted onto the brick detail response.
-    followup = client.get("/api/bricks/rbrick-1")
+    followup = client.get("/admin/nanobar/api/bricks/rbrick-1")
     assert followup.json()["result"]["data"]["scenario"]["description"] == "The order id does not exist."
 
 
 def test_api_set_brick_scenario_brick_not_found(client: TestClient) -> None:
-    response = client.post("/api/bricks/does-not-exist/scenario", json={"regression_scenario_label": "X"})
+    response = client.post("/admin/nanobar/api/bricks/does-not-exist/scenario", json={"regression_scenario_label": "X"})
 
     assert response.status_code == 404
     assert response.json()["status"] == "error"
@@ -422,7 +681,7 @@ def test_api_set_brick_scenario_rejects_non_string_field(db_path: str, client: T
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/scenario", json={"description": 123})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/scenario", json={"description": 123})
 
     assert response.status_code == 400
     assert "description" in response.json()["msg"]
@@ -434,7 +693,9 @@ def test_api_set_brick_scenario_rejects_malformed_json(db_path: str, client: Tes
     conn.close()
 
     response = client.post(
-        "/api/bricks/rbrick-1/scenario", content=b"{not valid json", headers={"content-type": "application/json"}
+        "/admin/nanobar/api/bricks/rbrick-1/scenario",
+        content=b"{not valid json",
+        headers={"content-type": "application/json"},
     )
 
     assert response.status_code == 400
@@ -446,7 +707,7 @@ def test_api_set_brick_scenario_rejects_body_not_an_object(db_path: str, client:
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/scenario", json=["label"])
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/scenario", json=["label"])
 
     assert response.status_code == 400
 
@@ -456,20 +717,20 @@ def test_api_add_and_remove_brick_tags(db_path: str, client: TestClient) -> None
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    added_first = client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
-    added_second = client.post("/api/bricks/rbrick-1/tags", json={"tag": "checkout"})
+    added_first = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+    added_second = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "checkout"})
 
     assert added_first.status_code == 200
     assert added_first.json()["result"]["data"] == ["flaky"]
     assert added_second.json()["result"]["data"] == ["checkout", "flaky"]
 
-    removed = client.delete("/api/bricks/rbrick-1/tags/flaky")
+    removed = client.delete("/admin/nanobar/api/bricks/rbrick-1/tags/flaky")
 
     assert removed.status_code == 200
     assert removed.json()["result"]["data"] == ["checkout"]
 
     # And it actually persisted onto the brick detail response.
-    followup = client.get("/api/bricks/rbrick-1")
+    followup = client.get("/admin/nanobar/api/bricks/rbrick-1")
     assert followup.json()["result"]["data"]["tags"] == ["checkout"]
 
 
@@ -478,14 +739,14 @@ def test_api_add_brick_tag_is_idempotent(db_path: str, client: TestClient) -> No
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
-    response = client.post("/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+    client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
 
     assert response.json()["result"]["data"] == ["flaky"]
 
 
 def test_api_add_brick_tag_brick_not_found(client: TestClient) -> None:
-    response = client.post("/api/bricks/does-not-exist/tags", json={"tag": "flaky"})
+    response = client.post("/admin/nanobar/api/bricks/does-not-exist/tags", json={"tag": "flaky"})
 
     assert response.status_code == 404
     assert response.json()["status"] == "error"
@@ -496,7 +757,7 @@ def test_api_add_brick_tag_rejects_missing_tag_field(db_path: str, client: TestC
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/tags", json={})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={})
 
     assert response.status_code == 400
     assert "tag" in response.json()["msg"]
@@ -507,7 +768,7 @@ def test_api_add_brick_tag_rejects_empty_tag(db_path: str, client: TestClient) -
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.post("/api/bricks/rbrick-1/tags", json={"tag": ""})
+    response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": ""})
 
     assert response.status_code == 400
 
@@ -518,7 +779,9 @@ def test_api_add_brick_tag_rejects_malformed_json(db_path: str, client: TestClie
     conn.close()
 
     response = client.post(
-        "/api/bricks/rbrick-1/tags", content=b"{not valid json", headers={"content-type": "application/json"}
+        "/admin/nanobar/api/bricks/rbrick-1/tags",
+        content=b"{not valid json",
+        headers={"content-type": "application/json"},
     )
 
     assert response.status_code == 400
@@ -526,7 +789,7 @@ def test_api_add_brick_tag_rejects_malformed_json(db_path: str, client: TestClie
 
 
 def test_api_remove_brick_tag_brick_not_found(client: TestClient) -> None:
-    response = client.delete("/api/bricks/does-not-exist/tags/flaky")
+    response = client.delete("/admin/nanobar/api/bricks/does-not-exist/tags/flaky")
 
     assert response.status_code == 404
     assert response.json()["status"] == "error"
@@ -537,7 +800,7 @@ def test_api_remove_brick_tag_not_present_is_a_no_op(db_path: str, client: TestC
     insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
     conn.close()
 
-    response = client.delete("/api/bricks/rbrick-1/tags/never-added")
+    response = client.delete("/admin/nanobar/api/bricks/rbrick-1/tags/never-added")
 
     assert response.status_code == 200
     assert response.json()["result"]["data"] == []
@@ -551,7 +814,7 @@ def test_api_remove_brick_tag_not_present_is_a_no_op(db_path: str, client: TestC
 
 
 def test_nanobars_page_served(client: TestClient) -> None:
-    response = client.get("/")
+    response = client.get("/admin/nanobar/")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -559,14 +822,14 @@ def test_nanobars_page_served(client: TestClient) -> None:
 
 
 def test_dashboard_route_alias_serves_same_page(client: TestClient) -> None:
-    response = client.get("/dashboard")
+    response = client.get("/admin/nanobar/dashboard")
 
     assert response.status_code == 200
     assert "Nanobars · Nanobar Dashboard" in response.text
 
 
 def test_nanobar_detail_page_served(client: TestClient) -> None:
-    response = client.get("/nanobars/nb-1")
+    response = client.get("/admin/nanobar/nanobars/nb-1")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -574,14 +837,14 @@ def test_nanobar_detail_page_served(client: TestClient) -> None:
 
 
 def test_brick_detail_page_served(client: TestClient) -> None:
-    response = client.get("/bricks/rbrick-1")
+    response = client.get("/admin/nanobar/bricks/rbrick-1")
 
     assert response.status_code == 200
     assert "Brick · NanobarAPI" in response.text
 
 
 def test_triage_page_served(client: TestClient) -> None:
-    response = client.get("/triage")
+    response = client.get("/admin/nanobar/triage")
 
     assert response.status_code == 200
     assert "Triage board · Nanobar Dashboard" in response.text
@@ -605,7 +868,7 @@ def test_static_assets_served_for_each_page(client: TestClient) -> None:
 
 
 def test_api_list_traces_empty(client: TestClient) -> None:
-    response = client.get("/api/traces")
+    response = client.get("/admin/nanobar/api/traces")
 
     assert response.status_code == 200
     assert response.json()["result"]["data"] == []
@@ -624,7 +887,7 @@ def test_api_list_traces_returns_summaries(events_db_path: str, client: TestClie
     finally:
         conn.close()
 
-    response = client.get("/api/traces")
+    response = client.get("/admin/nanobar/api/traces")
 
     assert response.status_code == 200
     data = response.json()["result"]["data"]
@@ -635,7 +898,7 @@ def test_api_list_traces_returns_summaries(events_db_path: str, client: TestClie
 
 
 def test_api_list_traces_invalid_limit(client: TestClient) -> None:
-    response = client.get("/api/traces?limit=not-a-number")
+    response = client.get("/admin/nanobar/api/traces?limit=not-a-number")
 
     assert response.status_code == 400
     assert response.json()["status"] == "error"
@@ -654,8 +917,8 @@ def test_api_trace_spans_ordered_and_not_found(events_db_path: str, client: Test
     finally:
         conn.close()
 
-    ok = client.get("/api/traces/tr-1/spans")
-    missing = client.get("/api/traces/does-not-exist/spans")
+    ok = client.get("/admin/nanobar/api/traces/tr-1/spans")
+    missing = client.get("/admin/nanobar/api/traces/does-not-exist/spans")
 
     assert ok.status_code == 200
     data = ok.json()["result"]["data"]
@@ -671,14 +934,14 @@ def test_api_trace_spans_ordered_and_not_found(events_db_path: str, client: Test
 
 
 def test_traces_list_page_served(client: TestClient) -> None:
-    response = client.get("/traces")
+    response = client.get("/admin/nanobar/traces")
 
     assert response.status_code == 200
     assert "Traces · Nanobar Dashboard" in response.text
 
 
 def test_trace_detail_page_served(client: TestClient) -> None:
-    response = client.get("/traces/tr-1")
+    response = client.get("/admin/nanobar/traces/tr-1")
 
     assert response.status_code == 200
     assert "Trace · Nanobar Dashboard" in response.text
@@ -711,7 +974,8 @@ def test_build_app_without_explicit_db_path_uses_resolve_db_path(
     assert app.state.db_path == override
 
     client = TestClient(app)
-    response = client.get("/api/nanobars")
+    _authenticate(client)
+    response = client.get("/admin/nanobar/api/nanobars")
     assert response.status_code == 200
 
 
@@ -746,8 +1010,9 @@ def test_dashboard_app_handles_not_yet_existing_database_directory(tmp_path: Pat
     nested_db_path = str(tmp_path / "not-yet-created" / "regression_bricks.db")
     app = build_app(db_path=nested_db_path)
     client = TestClient(app)
+    _authenticate(client)
 
-    response = client.get("/api/nanobars")
+    response = client.get("/admin/nanobar/api/nanobars")
 
     assert response.status_code == 200
     assert response.json()["result"]["data"] == []

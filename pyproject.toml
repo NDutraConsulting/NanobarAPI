@@ -28,6 +28,7 @@ serve = ["uvicorn>=0.30"]
 
 [project.scripts]
 nanobar = "nanobar_api.cli:main"
+nanobar-lint-service-boundaries = "nanobar_api.lint:main"
 
 [dependency-groups]
 dev = [

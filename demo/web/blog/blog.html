@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blog · NanobarAPI Demo</title>
+  <link rel="stylesheet" href="/static/blog/blog.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/" aria-current="page">Blog</a>
+    <a href="/book-appointment">Book an appointment</a>
+  </nav>
+
+  <div class="page">
+    <header class="page-header">
+      <h1 class="page-title">The NanobarAPI Demo Blog</h1>
+      <p class="page-subtitle">A reference application built on NanobarAPI -- posts, scheduling, and appointment booking.</p>
+    </header>
+
+    <main class="page-main">
+      <div id="posts-status" class="posts-status" hidden></div>
+
+      <ul id="posts-list" class="posts-list" hidden></ul>
+
+      <div id="posts-empty" class="empty-state" hidden>
+        <p class="empty-state-title">No posts published yet</p>
+      </div>
+    </main>
+  </div>
+
+  <template id="post-item-template">
+    <li class="post-item">
+      <a class="post-link">
+        <span class="post-title"></span>
+        <span class="post-date"></span>
+      </a>
+    </li>
+  </template>
+
+  <script type="module" src="/static/blog/blog-controller.js"></script>
+</body>
+</html>

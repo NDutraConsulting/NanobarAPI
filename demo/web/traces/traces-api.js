@@ -4,10 +4,10 @@
 // throws if the network request itself fails (no response at all).
 // No DOM access happens in this file.
 
-const BASE_URL = "/api/traces";
+const BASE_URL = "/admin/nanobar/api/traces";
 
 /**
- * GET /api/traces?channel=trace&limit=100
+ * GET /admin/nanobar/api/traces?channel=trace&limit=100
  * @returns {Promise<{status: string, msg: string, result: {type: string, data: any}}>}
  */
 export async function fetchTraces() {

@@ -7,7 +7,7 @@
 import { fetchTraceSpans } from "./trace-api.js";
 import { setTraceId, showLoading, showNotFound, showNetworkError, renderSpans } from "./trace-ui.js";
 
-/** Extract the trace id from a path like /traces/{trace_id}. */
+/** Extract the trace id from a path like /admin/nanobar/traces/{trace_id}. */
 function getTraceIdFromPath() {
   const segments = window.location.pathname.split("/").filter(Boolean);
   return segments[segments.length - 1];

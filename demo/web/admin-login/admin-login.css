@@ -1,0 +1,120 @@
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f4f5f7;
+  color: #1f2328;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.login-page {
+  width: 100%;
+  padding: 1.5rem;
+  box-sizing: border-box;
+}
+
+.login-card {
+  max-width: 360px;
+  margin: 0 auto;
+  background: #ffffff;
+  border: 1px solid #e1e4e8;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  padding: 2rem 1.75rem;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.login-subtitle {
+  margin: -0.5rem 0 0;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.login-field-label {
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.login-field input {
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 2px solid #9aa1ab;
+  background: #ffffff;
+  color: #1f2328;
+  box-sizing: border-box;
+}
+
+.login-field input:focus {
+  outline: 2px solid #4f46e5;
+  outline-offset: 1px;
+  border-color: #4f46e5;
+}
+
+.login-submit-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.65rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #4f46e5;
+  background: #4f46e5;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.login-submit-btn:hover:not(:disabled) {
+  background: #4338ca;
+}
+
+.login-submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-error {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: #fdecea;
+  border: 1px solid #f5c2c0;
+  color: #b42318;
+}
+
+.login-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.login-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f4f5f7;
+  border: 1px solid #e1e4e8;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}

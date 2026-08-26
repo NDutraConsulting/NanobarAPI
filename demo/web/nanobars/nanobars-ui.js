@@ -97,7 +97,7 @@ export function renderGroups(groups) {
       const itemNode = itemTemplate.content.cloneNode(true);
 
       const link = itemNode.querySelector(".nanobar-link");
-      link.href = `/nanobars/${nanobar.nanobar_id}`;
+      link.href = `/admin/nanobar/nanobars/${nanobar.nanobar_id}`;
 
       itemNode.querySelector(".nanobar-id").textContent = nanobar.nanobar_id;
       itemNode.querySelector(".nanobar-system").textContent = nanobar.system_name;

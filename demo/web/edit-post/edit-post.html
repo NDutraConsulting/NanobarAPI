@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edit post · NanobarAPI Demo</title>
+  <link rel="stylesheet" href="/static/edit-post/edit-post.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/admin/app/dashboard">App admin</a>
+    <a href="/admin/nanobar/dashboard">Nanobar admin</a>
+  </nav>
+
+  <div class="page">
+    <p class="back-link"><a href="/admin/app/dashboard">&larr; Back to dashboard</a></p>
+
+    <header class="page-header">
+      <h1 class="page-title">Edit post</h1>
+    </header>
+
+    <div id="page-status" class="page-status" hidden></div>
+
+    <form id="edit-post-form" class="edit-post-form" hidden>
+      <label class="edit-post-field">
+        <span class="edit-post-field-label">Title</span>
+        <input type="text" id="edit-post-title" name="title" required />
+      </label>
+      <label class="edit-post-field">
+        <span class="edit-post-field-label">Body</span>
+        <textarea id="edit-post-body" name="body" rows="10" required></textarea>
+      </label>
+      <div class="edit-post-actions">
+        <button type="submit" id="edit-post-save-btn" class="edit-post-save-btn">Save</button>
+        <a href="/admin/app/dashboard" class="edit-post-cancel-link">Cancel</a>
+      </div>
+      <p id="edit-post-error" class="edit-post-error" role="alert" hidden></p>
+    </form>
+  </div>
+
+  <script type="module" src="/static/edit-post/edit-post-controller.js"></script>
+</body>
+</html>

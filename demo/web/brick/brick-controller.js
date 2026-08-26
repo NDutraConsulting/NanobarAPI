@@ -7,7 +7,7 @@
 import * as api from "./brick-api.js";
 import * as ui from "./brick-ui.js";
 
-/** Extract the brick id from a path like /bricks/{brick_id}. */
+/** Extract the brick id from a path like /admin/nanobar/bricks/{brick_id}. */
 function getBrickIdFromPath() {
   const segments = window.location.pathname.split("/").filter(Boolean);
   return segments[segments.length - 1];

@@ -5,12 +5,12 @@
 // No DOM access happens in this file.
 
 /**
- * GET /api/traces/{trace_id}/spans
+ * GET /admin/nanobar/api/traces/{trace_id}/spans
  * @param {string} traceId
  * @returns {Promise<{status: string, msg: string, result: {type: string, data: any}}>}
  */
 export async function fetchTraceSpans(traceId) {
-  const response = await fetch(`/api/traces/${encodeURIComponent(traceId)}/spans`, {
+  const response = await fetch(`/admin/nanobar/api/traces/${encodeURIComponent(traceId)}/spans`, {
     method: "GET",
     headers: { Accept: "application/json" },
   });

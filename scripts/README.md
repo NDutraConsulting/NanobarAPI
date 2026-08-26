@@ -1,6 +1,9 @@
 # Development Scripts
 
 * `scripts/test` - Run the test suite.
+* `scripts/test-js` - Run demo/web/*'s static JS bundle tests (Node's built-in test runner +
+  jsdom; run `npm install --prefix demo/web` once first). Separate from `scripts/test` on
+  purpose -- this project's Python verification loop has no Node dependency otherwise.
 * `scripts/lint` - Run the automated code linting/formatting tools.
 * `scripts/check` - Run the code linting, checking that it passes.
 * `scripts/coverage` - Check that code coverage is complete.

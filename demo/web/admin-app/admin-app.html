@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App admin · NanobarAPI Demo</title>
+  <link rel="stylesheet" href="/static/admin-app/admin-app.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/admin/app/dashboard" aria-current="page">App admin</a>
+    <a href="/admin/nanobar/dashboard">Nanobar admin</a>
+  </nav>
+
+  <div class="page">
+    <header class="page-header">
+      <h1 class="page-title">App admin</h1>
+      <p class="page-subtitle">Notifications and posts for the demo blog app.</p>
+    </header>
+
+    <main class="page-main">
+      <section class="notifications-section" aria-labelledby="notifications-heading">
+        <h2 id="notifications-heading" class="section-heading">Notifications</h2>
+        <div id="notifications-status" class="notifications-status" hidden></div>
+        <ul id="notifications-list" class="notifications-list" hidden></ul>
+        <div id="notifications-empty" class="empty-state" hidden>
+          <p class="empty-state-title">No notifications yet</p>
+        </div>
+      </section>
+
+      <section class="new-post-section" aria-labelledby="new-post-heading">
+        <h2 id="new-post-heading" class="section-heading">New post</h2>
+        <form id="new-post-form" class="new-post-form">
+          <label class="new-post-field">
+            <span class="new-post-field-label">Title</span>
+            <input type="text" id="new-post-title" name="title" required />
+          </label>
+          <label class="new-post-field">
+            <span class="new-post-field-label">Body</span>
+            <textarea id="new-post-body" name="body" rows="4" required></textarea>
+          </label>
+          <label class="new-post-field">
+            <span class="new-post-field-label">Schedule for (optional -- leave blank to save as a draft)</span>
+            <input type="datetime-local" id="new-post-scheduled-at" name="scheduled_at" />
+          </label>
+          <button type="submit" id="new-post-submit-btn" class="new-post-submit-btn">Save post</button>
+          <p id="new-post-error" class="new-post-error" role="alert" hidden></p>
+          <p id="new-post-success" class="new-post-success" role="status" hidden></p>
+        </form>
+      </section>
+
+      <section class="posts-section" aria-labelledby="posts-heading">
+        <h2 id="posts-heading" class="section-heading">All posts</h2>
+        <div id="posts-status" class="posts-status" hidden></div>
+        <ul id="posts-list" class="posts-list" hidden></ul>
+        <div id="posts-empty" class="empty-state" hidden>
+          <p class="empty-state-title">No posts yet</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="notification-item-template">
+    <li class="notification-item">
+      <span class="notification-message"></span>
+      <span class="notification-date"></span>
+      <button type="button" class="notification-read-btn">Mark read</button>
+    </li>
+  </template>
+
+  <template id="post-item-template">
+    <li class="post-item">
+      <a class="post-item-link" href="#">
+        <span class="post-title"></span>
+        <span class="post-status"></span>
+      </a>
+    </li>
+  </template>
+
+  <script type="module" src="/static/admin-app/admin-app-controller.js"></script>
+</body>
+</html>

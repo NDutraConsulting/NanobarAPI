@@ -1,0 +1,25 @@
+/* NanobarAPI UI design system — the canonical set of design tokens and base reset meant to be
+   shared by every default page's own stylesheet (demo/web/*/*.css), factored out to one
+   vendored location instead of being duplicated verbatim in each. Linked (before the page's
+   own stylesheet) from demo/web/nanobar/nanobar.html so far; the other demo/web/*/*.html pages
+   still declare their own copy of these same tokens and are pending migration. */
+
+:root {
+  --color-bg: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-border: #e1e4e8;
+  --color-text: #1f2328;
+  --color-text-muted: #6b7280;
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-error: #b91c1c;
+  --color-error-bg: #fef2f2;
+  --color-error-border: #fecaca;
+  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}

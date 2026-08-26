@@ -7,7 +7,7 @@
 import * as api from "./nanobar-api.js";
 import * as ui from "./nanobar-ui.js";
 
-/** Extract the nanobar id from a path like /nanobars/{nanobar_id}. */
+/** Extract the nanobar id from a path like /admin/nanobar/nanobars/{nanobar_id}. */
 function getNanobarIdFromPath() {
   const segments = window.location.pathname.split("/").filter(Boolean);
   return segments[segments.length - 1];
@@ -62,6 +62,19 @@ async function loadNanobar() {
   const bricks = bricksEnvelope.result.data;
   ui.showBricksLoading();
   ui.renderBricks(bricks);
+
+  // Best-effort: missing coverage isn't fatal to the page either.
+  ui.showCoverageGapsLoading();
+  try {
+    const gapsEnvelope = await api.fetchCoverageGaps(nanobarId);
+    if (gapsEnvelope.status === "success") {
+      ui.renderCoverageGaps(gapsEnvelope.result.data);
+    } else {
+      ui.showCoverageGapsError(gapsEnvelope.msg);
+    }
+  } catch (err) {
+    ui.showCoverageGapsError("Could not reach the server.");
+  }
 
   // Best-effort: the nanobar's own summary fields aren't fatal to the page.
   try {

@@ -17,6 +17,7 @@ from nanobar_api import NanobarProps, NanobarTelemetry, error, success
 from nanobar_api.bricks import store as bricks_store
 from nanobar_api.bricks.schema import RegressionBrick
 from nanobar_api.eventbus import store as events_store
+from nanobar_api.taxonomy import NanobarTypeTaxonomy, compute_regression_weight, detect_coverage_gaps
 
 from .db import get_connection
 from .events_db import get_connection as get_events_connection
@@ -35,6 +36,11 @@ def _events_db_path(request: Request) -> str:
 def _telemetry(request: Request) -> NanobarTelemetry:
     telemetry: NanobarTelemetry = request.app.state.telemetry
     return telemetry
+
+
+def _taxonomy(request: Request) -> NanobarTypeTaxonomy:
+    taxonomy: NanobarTypeTaxonomy = request.app.state.taxonomy
+    return taxonomy
 
 
 def _brick_detail_dict(conn: Any, brick: RegressionBrick) -> dict[str, Any]:
@@ -63,9 +69,7 @@ async def list_nanobars(request: Request) -> JSONResponse:
     target_type = request.query_params.get("target_type")
     conn = get_connection(_db_path(request))
     try:
-        with _telemetry(request).span(
-            "dashboard.nanobars.list", nanobar=NanobarProps(type="api-to-db")
-        ):
+        with _telemetry(request).span("dashboard.nanobars.list", nanobar=NanobarProps(type="api-to-db")):
             nanobars = bricks_store.list_nanobars(conn, target_type=target_type)
         return JSONResponse(success([dataclasses.asdict(n) for n in nanobars], type_="array"))
     finally:
@@ -210,9 +214,9 @@ async def remove_brick_tag(request: Request) -> JSONResponse:
 async def update_nanobar(request: Request) -> JSONResponse:
     """PATCH /api/nanobars/{nanobar_id} with body
     {"label": "...", "scenario_description": "...", "component_source_description": "...",
-    "domain": "..."}.
+    "domain": "...", "criticality": 0.0-1.0}.
 
-    All four fields are optional and independent — an omitted field keeps its current
+    All five fields are optional and independent — an omitted field keeps its current
     stored value (partial update), it is not overwritten with null. `source_info` is not
     editable here — it's auto-derived structured data, not a human-edited field.
     """
@@ -230,7 +234,7 @@ async def update_nanobar(request: Request) -> JSONResponse:
         if not isinstance(body, dict):
             return JSONResponse(error("request body must be a JSON object"), status_code=400)
 
-        fields = {
+        string_fields = {
             "label": body.get("label", current.label),
             "scenario_description": body.get("scenario_description", current.scenario_description),
             "component_source_description": body.get(
@@ -238,14 +242,51 @@ async def update_nanobar(request: Request) -> JSONResponse:
             ),
             "domain": body.get("domain", current.domain),
         }
-        for name, value in fields.items():
+        for name, value in string_fields.items():
             if value is not None and not isinstance(value, str):
                 return JSONResponse(error(f"{name!r} must be a string"), status_code=400)
 
-        bricks_store.update_nanobar(conn, nanobar_id, **fields)
+        criticality = body.get("criticality", current.criticality)
+        if (
+            not isinstance(criticality, (int, float))
+            or isinstance(criticality, bool)
+            or not (0.0 <= criticality <= 1.0)
+        ):
+            return JSONResponse(error("'criticality' must be a number between 0.0 and 1.0"), status_code=400)
+
+        bricks_store.update_nanobar(conn, nanobar_id, criticality=float(criticality), **string_fields)
+
+        if float(criticality) != current.criticality:
+            # regression_weight depends on criticality (nanobar_api.taxonomy.
+            # compute_regression_weight) -- recompute it too, same "recompute on criticality
+            # change" trigger the taxonomy plan's own Phase B calls for.
+            bound_bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
+            refreshed = bricks_store.get_nanobar(conn, nanobar_id)
+            assert refreshed is not None
+            weight = compute_regression_weight(refreshed, bound_bricks, _taxonomy(request))
+            bricks_store.set_regression_weight(conn, nanobar_id, weight)
+
         updated = bricks_store.get_nanobar(conn, nanobar_id)
         assert updated is not None
         return JSONResponse(success(dataclasses.asdict(updated)))
+    finally:
+        conn.close()
+
+
+async def nanobar_coverage_gaps(request: Request) -> JSONResponse:
+    """GET /api/nanobars/{nanobar_id}/coverage-gaps -> envelope success with the list of
+    required scenario types this nanobar's `nanobar_type` expects but has no bound brick for —
+    the "missing coverage" section on the nanobar detail page."""
+    nanobar_id = request.path_params["nanobar_id"]
+    conn = get_connection(_db_path(request))
+    try:
+        nanobar = bricks_store.get_nanobar(conn, nanobar_id)
+        if nanobar is None:
+            return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
+
+        bound_bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
+        gaps = detect_coverage_gaps(nanobar, bound_bricks, _taxonomy(request))
+        return JSONResponse(success(gaps, type_="array"))
     finally:
         conn.close()
 

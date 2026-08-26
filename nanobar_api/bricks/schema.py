@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS nanobars (
     request_object_id TEXT NOT NULL,
     response_object_id TEXT NOT NULL,
     regression_weight REAL NOT NULL CHECK (regression_weight BETWEEN 0.0 AND 1.0),
+    criticality REAL NOT NULL DEFAULT 0.5 CHECK (criticality BETWEEN 0.0 AND 1.0),
     endpoint_scenario_frequency_json TEXT NOT NULL CHECK (json_valid(endpoint_scenario_frequency_json)),
     monitor_target_refs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(monitor_target_refs_json)),
     label TEXT,
@@ -123,6 +124,7 @@ class Nanobar:
     regression_weight: float
     endpoint_scenario_frequency: dict[str, Any]
     created_by: str
+    criticality: float = 0.5
     monitor_target_refs: list[MonitorTargetRef] = field(default_factory=list)
     label: str | None = None
     scenario_description: str | None = None

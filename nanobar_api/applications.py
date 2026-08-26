@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -18,6 +19,19 @@ from nanobar_api.openapi import (
     get_swagger_ui_html,
 )
 from nanobar_api.routing import RouteHandler, adapt_handler
+
+#: Vendored shared design tokens + base reset meant to replace what every default page's own
+#: stylesheet (`demo/web/*/*.css`) otherwise duplicates verbatim — not a `NanobarRouteSet`/
+#: capture consumer, same "pure static file serving" shape as the swagger-ui mount above.
+#: See `nanobar_api/static/nanobar-ui-designsystem/design-system.css`'s own docstring for
+#: current adoption status across `demo/web/*`.
+#: Mounted under `/nanobar-static/...`, matching `SWAGGER_STATIC_MOUNT` below, not `/static` —
+#: found via live verification: a demo app that (reasonably) mounts its own StaticFiles at
+#: `/static` shadows any `/static/...`-prefixed framework mount registered after it, since
+#: Starlette's Mount matching is prefix-based and first-match-wins in route list order. Every
+#: app is free to claim `/static` for itself; nothing this framework owns may live under it.
+DESIGN_SYSTEM_STATIC_DIR = Path(__file__).resolve().parent / "static" / "nanobar-ui-designsystem"
+DESIGN_SYSTEM_STATIC_MOUNT = "/nanobar-static/design-system"
 
 
 class NanobarAPI(Starlette):
@@ -42,6 +56,13 @@ class NanobarAPI(Starlette):
         self.schema_generator = NanobarSchemaGenerator(title=title, version=version)
 
         all_routes: list[BaseRoute] = list(routes or [])
+        all_routes.append(
+            Mount(
+                DESIGN_SYSTEM_STATIC_MOUNT,
+                app=StaticFiles(directory=DESIGN_SYSTEM_STATIC_DIR),
+                name="nanobar-ui-designsystem",
+            )
+        )
         if openapi_url is not None:
             all_routes.append(Route(openapi_url, self._openapi, include_in_schema=False))
         if docs_url is not None and openapi_url is not None:

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Post · NanobarAPI Demo</title>
+  <link rel="stylesheet" href="/static/post/post.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/">Blog</a>
+    <a href="/book-appointment">Book an appointment</a>
+  </nav>
+
+  <div class="page">
+    <p class="back-link"><a href="/">&larr; All posts</a></p>
+
+    <div id="page-status" class="page-status" hidden></div>
+
+    <article id="post-article" class="post-article" hidden>
+      <h1 id="post-title" class="post-title"></h1>
+      <p id="post-date" class="post-date"></p>
+      <div id="post-body" class="post-body"></div>
+    </article>
+  </div>
+
+  <script type="module" src="/static/post/post-controller.js"></script>
+</body>
+</html>

@@ -23,6 +23,7 @@ const editLabelEl = document.getElementById("edit-label");
 const editScenarioDescriptionEl = document.getElementById("edit-scenario-description");
 const editComponentSourceEl = document.getElementById("edit-component-source");
 const editDomainEl = document.getElementById("edit-domain");
+const editCriticalityEl = document.getElementById("edit-criticality");
 const editSaveBtnEl = document.getElementById("edit-save-btn");
 const editErrorEl = document.getElementById("edit-error");
 const editSuccessEl = document.getElementById("edit-success");
@@ -163,16 +164,23 @@ function populateEditForm(nanobar) {
   editScenarioDescriptionEl.value = nanobar.scenario_description || "";
   editComponentSourceEl.value = nanobar.component_source_description || "";
   editDomainEl.value = nanobar.domain || "";
+  editCriticalityEl.value = nanobar.criticality ?? 0.5;
 }
 
-/** Reads the edit form's current field values as a partial-update payload. */
+/** Reads the edit form's current field values as a partial-update payload. An emptied
+ * criticality field is omitted (keeps its current stored value) rather than sent as the
+ * misleading `Number("") === 0`, which would silently zero it out. */
 export function readEditFormFields() {
-  return {
+  const fields = {
     label: editLabelEl.value,
     scenario_description: editScenarioDescriptionEl.value,
     component_source_description: editComponentSourceEl.value,
     domain: editDomainEl.value,
   };
+  if (editCriticalityEl.value !== "") {
+    fields.criticality = Number(editCriticalityEl.value);
+  }
+  return fields;
 }
 
 export function showEditError(message) {
@@ -196,6 +204,54 @@ export function clearEditMessages() {
 export function setEditFormBusy(isBusy) {
   editSaveBtnEl.disabled = isBusy;
   editSaveBtnEl.textContent = isBusy ? "Saving…" : "Save";
+}
+
+/* -------------------------------------------------------- coverage gaps */
+
+const coverageGapsSectionEl = document.getElementById("coverage-gaps-section");
+const coverageGapsStatusEl = document.getElementById("coverage-gaps-status");
+const coverageGapsListEl = document.getElementById("coverage-gaps-list");
+const coverageGapsEmptyEl = document.getElementById("coverage-gaps-empty");
+
+export function showCoverageGapsLoading() {
+  coverageGapsSectionEl.hidden = false;
+  coverageGapsStatusEl.hidden = false;
+  coverageGapsStatusEl.className = "coverage-gaps-status";
+  coverageGapsStatusEl.textContent = "Loading…";
+  coverageGapsListEl.hidden = true;
+  coverageGapsEmptyEl.hidden = true;
+}
+
+export function showCoverageGapsError(message) {
+  coverageGapsSectionEl.hidden = false;
+  coverageGapsStatusEl.hidden = false;
+  coverageGapsStatusEl.className = "coverage-gaps-status coverage-gaps-status-error";
+  coverageGapsStatusEl.textContent = message || "Could not load coverage gaps.";
+  coverageGapsListEl.hidden = true;
+  coverageGapsEmptyEl.hidden = true;
+}
+
+/** Renders the "missing coverage" list — one pill per required scenario type this nanobar's
+ * type expects but has no bound brick for. Empty means fully covered. */
+export function renderCoverageGaps(gaps) {
+  coverageGapsSectionEl.hidden = false;
+  coverageGapsStatusEl.hidden = true;
+
+  if (!gaps || gaps.length === 0) {
+    coverageGapsListEl.hidden = true;
+    coverageGapsEmptyEl.hidden = false;
+    return;
+  }
+
+  coverageGapsEmptyEl.hidden = true;
+  coverageGapsListEl.hidden = false;
+  coverageGapsListEl.textContent = "";
+  for (const scenarioType of gaps) {
+    const pill = document.createElement("span");
+    pill.className = "gap-pill";
+    pill.textContent = scenarioType;
+    coverageGapsListEl.appendChild(pill);
+  }
 }
 
 /* ---------------------------------------------------------------- bricks */
@@ -248,7 +304,7 @@ function buildBrickRow(brick) {
   const response = brick.response || {};
   const reviewStatus = (brick.review_status && brick.review_status.status) || "new";
 
-  link.href = `/bricks/${encodeURIComponent(brick.regression_brick_id)}`;
+  link.href = `/admin/nanobar/bricks/${encodeURIComponent(brick.regression_brick_id)}`;
   methodEl.textContent = request.method || "?";
   pathEl.textContent = request.path || "(no path)";
 

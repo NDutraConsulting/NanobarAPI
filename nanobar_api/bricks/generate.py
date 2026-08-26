@@ -62,6 +62,40 @@ def _classify_scenario_type(status_code: int | None) -> str | None:
     return None
 
 
+def _classify_capture_layer_scenario(payload: dict[str, Any], response_payload: Any) -> str | None:
+    """`_classify_scenario_type`'s counterpart for `capture_layer()`-produced events (validator/
+    controller layers) — there's no HTTP status code to classify, so this reads the signals
+    those layers actually produce instead: `payload["error"]` (an unhandled exception,
+    `NanobarController.handle`'s uncaught-failure case) and a validator-layer `ValidationError`'s
+    `{"errors": [...]}` response shape (per the API-Domain plan's Design Decision that a
+    `ValidationError` still classifies as `"invalid_input"`, symmetric with the 400 case above).
+    Deliberately narrower than `_classify_scenario_type`'s full vocabulary — these are the only
+    outcomes generically detectable without layer-specific knowledge; anything else is `None`
+    rather than guessed.
+    """
+    if payload.get("error") is True:
+        return "server_error"
+    if isinstance(response_payload, dict) and "errors" in response_payload:
+        return "invalid_input"
+    return "success"
+
+
+def _classify_db_scenario_type(error_type: str | None) -> str | None:
+    """`_classify_scenario_type`'s DB-boundary counterpart — there's no HTTP status code at the
+    ORM layer either, but unlike the generic `_classify_capture_layer_scenario` above, the exact
+    SQLAlchemy exception class name (`nanobar_api.orm.NanobarORMWrapper`'s `handle_error`
+    listener stamps it as `response["error_type"]`) is a real, specific signal: an
+    `IntegrityError` is a `"conflict"` (a unique/foreign-key violation, not an infrastructure
+    fault), not a generic `"server_error"`. Per the Service-Domain plan's own settled Design
+    Decision.
+    """
+    if error_type is None:
+        return "success"
+    if error_type == "IntegrityError":
+        return "conflict"
+    return "server_error"
+
+
 def _decode_body_json(body_b64: str) -> dict[str, Any]:
     """Decode a base64 request/response body and try to parse it as JSON.
 
@@ -107,6 +141,8 @@ def generate_bricks(
             request_payload = event.payload["request"]
             response_payload = event.payload["response"]
             raw_content_hash = event.payload["content_hash"]
+            if not isinstance(request_payload, dict) or not isinstance(response_payload, dict):
+                raise TypeError("request/response payload must each be an object")
         except (KeyError, TypeError):
             # Payload doesn't match the expected snapshot shape at all — nothing usable to
             # build a brick from. Still mark processed (no retry loop at this stage, that's
@@ -123,17 +159,19 @@ def generate_bricks(
             else []
         )
 
-        brick = RegressionBrick(
-            regression_brick_id=f"rbrick-{uuid.uuid4().hex[:12]}",
-            schema_version=schema_version,
-            brick_version=1,
-            # Kept honest and minimal for this thin slice: only fields we actually know at
-            # this stage. The full RegressionBrick JSON example in
-            # nanobarapi-architecture-rules.md includes host/project/file/class/function
-            # fields, but those require code-location instrumentation that doesn't exist yet
-            # — inventing values for them would be worse than omitting them.
-            source={"trace_id": event.trace_id, "span_id": event.span_id, "channel": event.channel},
-            request={
+        nanobar_type = event.payload.get("nanobar_type")
+        if nanobar_type is not None:
+            # capture_layer()-produced (validator/controller/orm layers): request_payload/
+            # response_payload are already structured Python data, not SnapshotMiddleware's
+            # base64-encoded-body/status_code shape — used as-is, no decoding needed.
+            brick_request: dict[str, Any] = request_payload
+            brick_response: dict[str, Any] = response_payload
+            if nanobar_type == "orm-request-response":
+                regression_scenario_type = _classify_db_scenario_type(response_payload.get("error_type"))
+            else:
+                regression_scenario_type = _classify_capture_layer_scenario(event.payload, response_payload)
+        else:
+            brick_request = {
                 "method": request_payload.get("method"),
                 "path": request_payload.get("path"),
                 "headers": request_payload.get("headers", {}),
@@ -143,16 +181,36 @@ def generate_bricks(
                 # inspecting a brick later.
                 "query_params": request_payload.get("query_params", {}),
                 "payload": _decode_body_json(request_payload.get("body_b64", "")),
-            },
-            response={
+            }
+            brick_response = {
                 "status_code": response_payload.get("status_code"),
                 "payload": _decode_body_json(response_payload.get("body_b64", "")),
+            }
+            regression_scenario_type = _classify_scenario_type(response_payload.get("status_code"))
+
+        brick = RegressionBrick(
+            regression_brick_id=f"rbrick-{uuid.uuid4().hex[:12]}",
+            schema_version=schema_version,
+            brick_version=1,
+            # Kept honest and minimal for this thin slice: only fields we actually know at
+            # this stage. The full RegressionBrick JSON example in
+            # nanobarapi-architecture-rules.md includes host/project/file/class/function
+            # fields, but those require code-location instrumentation that doesn't exist yet
+            # — inventing values for them would be worse than omitting them.
+            source={
+                "trace_id": event.trace_id,
+                "span_id": event.span_id,
+                "channel": event.channel,
+                **({"nanobar_type": nanobar_type} if nanobar_type is not None else {}),
+                **({"route_key": route_key} if (route_key := event.payload.get("route_key")) is not None else {}),
             },
+            request=brick_request,
+            response=brick_response,
             content_hash=content_hash,
             created_by=created_by,
             trace_refs=trace_refs,
             capture_policy_id=capture_policy_id,
-            regression_scenario_type=_classify_scenario_type(response_payload.get("status_code")),
+            regression_scenario_type=regression_scenario_type,
         )
 
         if get_brick_by_content_hash(bricks_conn, content_hash) is None:

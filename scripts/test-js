@@ -1,0 +1,10 @@
+#!/bin/sh -e
+
+# Runs demo/web/*'s static JS bundle tests (Node's built-in test runner + jsdom). Separate from
+# scripts/test on purpose: this project's Python verification loop has no Node dependency
+# otherwise, and the frontend stays deliberately build-tool-free -- this is dev-only test
+# tooling, not a build step. Run `npm install --prefix demo/web` once first.
+
+set -x
+
+npm test --prefix demo/web

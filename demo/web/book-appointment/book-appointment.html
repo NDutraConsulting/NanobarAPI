@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Book an appointment · NanobarAPI Demo</title>
+  <link rel="stylesheet" href="/static/book-appointment/book-appointment.css" />
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/">Blog</a>
+    <a href="/book-appointment" aria-current="page">Book an appointment</a>
+  </nav>
+
+  <div class="page">
+    <header class="page-header">
+      <h1 class="page-title">Book an appointment</h1>
+      <p class="page-subtitle">Tell us who you are and we'll be in touch.</p>
+    </header>
+
+    <form id="booking-form" class="booking-form">
+      <label class="booking-field">
+        <span class="booking-field-label">Name</span>
+        <input type="text" id="booking-name" name="name" required />
+      </label>
+
+      <label class="booking-field">
+        <span class="booking-field-label">Email</span>
+        <input type="email" id="booking-email" name="email" required />
+      </label>
+
+      <label class="booking-field">
+        <span class="booking-field-label">Note (optional)</span>
+        <textarea id="booking-note" name="note" rows="3"></textarea>
+      </label>
+
+      <button type="submit" id="booking-submit-btn" class="booking-submit-btn">Request appointment</button>
+      <p id="booking-error" class="booking-error" role="alert" hidden></p>
+      <p id="booking-success" class="booking-success" role="status" hidden></p>
+    </form>
+  </div>
+
+  <script type="module" src="/static/book-appointment/book-appointment-controller.js"></script>
+</body>
+</html>

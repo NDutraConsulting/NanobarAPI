@@ -15,8 +15,9 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from nanobar_api.bricks.generate import generate_bricks
+from nanobar_api.bricks.generate import _classify_capture_layer_scenario, generate_bricks
 from nanobar_api.bricks.store import connect as connect_bricks
+from nanobar_api.capture.layer_capture import capture_layer
 from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 from nanobar_api.eventbus.store import connect as connect_events, get_unprocessed, insert_events
@@ -307,6 +308,30 @@ def test_malformed_payload_is_marked_processed_and_skipped_not_crashed(tmp_path:
         bricks_conn.close()
 
 
+def test_non_dict_request_payload_is_marked_processed_and_skipped_not_crashed(tmp_path: Path) -> None:
+    malformed_event = Event(
+        event_id="evt-malformed-request",
+        channel="snapshot",
+        recorded_at_ns=1,
+        monotonic_ns=1,
+        # request/response/content_hash are all present, but request isn't an object -- a
+        # naive .get() on it downstream would raise AttributeError instead of being skipped.
+        payload={"request": "not-an-object", "response": {}, "content_hash": "abc"},
+    )
+
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [malformed_event])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert bricks == []
+        assert get_unprocessed(events_conn, "snapshot") == []
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
 def test_limit_is_respected(tmp_path: Path) -> None:
     repository = _repository("snapshot", "trace")
     client = TestClient(_build_app(repository))
@@ -489,6 +514,132 @@ def test_body_b64_round_trips_through_base64_correctly(tmp_path: Path) -> None:
         assert brick.response["payload"] == {"ok": True}
         assert brick.response["status_code"] == 201
         assert brick.content_hash == "sha256:deadbeef"
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
+def test_capture_layer_produced_event_uses_request_response_as_is(tmp_path: Path) -> None:
+    repository = _repository()
+    capture_layer(
+        repository,
+        "validator",
+        {"method": "POST", "path_params": {}, "query_params": {}, "body": {"name": "Ada"}},
+        {"name": "Ada"},
+        nanobar_type="validator-request-response",
+    )
+    event = repository.get_any(["snapshot"], timeout=1.0)
+    assert event is not None
+
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [event])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert len(bricks) == 1
+        brick = bricks[0]
+        assert brick.request == {"method": "POST", "path_params": {}, "query_params": {}, "body": {"name": "Ada"}}
+        assert brick.response == {"name": "Ada"}
+        assert brick.source["nanobar_type"] == "validator-request-response"
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
+def test_capture_layer_produced_event_classifies_success() -> None:
+    assert _classify_capture_layer_scenario({"error": False}, {"name": "Ada"}) == "success"
+
+
+def test_capture_layer_produced_event_classifies_validation_error() -> None:
+    assert _classify_capture_layer_scenario({"error": False}, {"errors": ["name: required"]}) == "invalid_input"
+
+
+def test_capture_layer_produced_event_classifies_server_error() -> None:
+    assert _classify_capture_layer_scenario({"error": True}, {}) == "server_error"
+
+
+def test_capture_layer_produced_event_regression_scenario_type_set_on_brick(tmp_path: Path) -> None:
+    repository = _repository()
+    capture_layer(
+        repository,
+        "validator",
+        {"body": {}},
+        {"errors": ["name: required field missing"]},
+        nanobar_type="validator-request-response",
+    )
+    event = repository.get_any(["snapshot"], timeout=1.0)
+    assert event is not None
+
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [event])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert bricks[0].regression_scenario_type == "invalid_input"
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
+def test_snapshot_middleware_event_source_has_no_nanobar_type_key(tmp_path: Path) -> None:
+    repository = _repository("snapshot", "trace")
+    client = TestClient(_build_app(repository))
+    event = _capture_one_snapshot_event(client, repository, path="/items")
+
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [event])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert "nanobar_type" not in bricks[0].source
+    finally:
+        events_conn.close()
+        bricks_conn.close()
+
+
+def test_classify_db_scenario_type_no_error_is_success() -> None:
+    from nanobar_api.bricks.generate import _classify_db_scenario_type
+
+    assert _classify_db_scenario_type(None) == "success"
+
+
+def test_classify_db_scenario_type_integrity_error_is_conflict() -> None:
+    from nanobar_api.bricks.generate import _classify_db_scenario_type
+
+    assert _classify_db_scenario_type("IntegrityError") == "conflict"
+
+
+def test_classify_db_scenario_type_other_error_is_server_error() -> None:
+    from nanobar_api.bricks.generate import _classify_db_scenario_type
+
+    assert _classify_db_scenario_type("OperationalError") == "server_error"
+
+
+def test_orm_produced_event_uses_db_scenario_classifier(tmp_path: Path) -> None:
+    repository = _repository()
+    capture_layer(
+        repository,
+        "orm",
+        {"statement": "INSERT INTO t VALUES (1)", "executemany": False},
+        {"error_type": "IntegrityError", "error_message": "UNIQUE constraint failed"},
+        nanobar_type="orm-request-response",
+        error=True,
+        route_key="POST /orders",
+    )
+    event = repository.get_any(["snapshot"], timeout=1.0)
+    assert event is not None
+
+    events_conn, bricks_conn = _dbs(tmp_path)
+    try:
+        insert_events(events_conn, [event])
+
+        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+
+        assert bricks[0].regression_scenario_type == "conflict"
+        assert bricks[0].source["route_key"] == "POST /orders"
     finally:
         events_conn.close()
         bricks_conn.close()

@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 
 from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.store import (
+    ack_event,
+    claim_events,
     connect,
+    fail_event,
     get_events_by_trace_id,
     get_unprocessed,
+    heartbeat,
     insert_events,
+    list_stale_workers,
     list_trace_ids,
     mark_processed,
+    register_worker,
 )
 
 
@@ -313,3 +320,234 @@ def test_get_events_by_trace_id_unknown_returns_empty(tmp_path: Path) -> None:
         assert get_events_by_trace_id(conn, "does-not-exist") == []
     finally:
         conn.close()
+
+
+def test_claim_events_marks_rows_claimed_and_orders_by_recorded_at(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-2", recorded_at_ns=200),
+                _make_event("evt-1", recorded_at_ns=100),
+                _make_event("evt-3", recorded_at_ns=300),
+            ],
+        )
+
+        claimed = claim_events(conn, "ch1", "worker-a", limit=2, lease_seconds=60.0)
+
+        assert [e.event_id for e in claimed] == ["evt-1", "evt-2"]
+        rows = conn.execute("SELECT event_id, claimed_by FROM events WHERE claimed_by IS NOT NULL").fetchall()
+        assert {row[0] for row in rows} == {"evt-1", "evt-2"}
+        assert all(row[1] == "worker-a" for row in rows)
+    finally:
+        conn.close()
+
+
+def test_claim_events_does_not_reclaim_unexpired_lease(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1")])
+        claim_events(conn, "ch1", "worker-a", limit=10, lease_seconds=60.0)
+
+        second_claim = claim_events(conn, "ch1", "worker-b", limit=10, lease_seconds=60.0)
+
+        assert second_claim == []
+    finally:
+        conn.close()
+
+
+def test_claim_events_reclaims_after_lease_expires(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1")])
+        claim_events(conn, "ch1", "worker-a", limit=10, lease_seconds=-1.0)
+
+        reclaimed = claim_events(conn, "ch1", "worker-b", limit=10, lease_seconds=60.0)
+
+        assert [e.event_id for e in reclaimed] == ["evt-1"]
+    finally:
+        conn.close()
+
+
+def test_claim_events_skips_processed_rows(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1")])
+        mark_processed(conn, ["evt-1"])
+
+        claimed = claim_events(conn, "ch1", "worker-a", limit=10, lease_seconds=60.0)
+
+        assert claimed == []
+    finally:
+        conn.close()
+
+
+def test_ack_event_sets_processed_and_clears_claim(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1")])
+        claim_events(conn, "ch1", "worker-a", limit=10, lease_seconds=60.0)
+
+        ack_event(conn, "evt-1")
+
+        row = conn.execute(
+            "SELECT processed_at, claimed_by, lease_expires_at FROM events WHERE event_id = ?", ("evt-1",)
+        ).fetchone()
+        assert row[0] is not None
+        assert row[1] is None
+        assert row[2] is None
+    finally:
+        conn.close()
+
+
+def test_fail_event_increments_attempt_count_and_releases_claim(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1")])
+        claim_events(conn, "ch1", "worker-a", limit=10, lease_seconds=60.0)
+
+        fail_event(conn, "evt-1", "boom")
+
+        row = conn.execute(
+            "SELECT attempt_count, last_error, claimed_by, lease_expires_at FROM events WHERE event_id = ?",
+            ("evt-1",),
+        ).fetchone()
+        assert row[0] == 1
+        assert row[1] == "boom"
+        assert row[2] is None
+        assert row[3] is None
+
+        reclaimable = claim_events(conn, "ch1", "worker-b", limit=10, lease_seconds=60.0)
+        assert [e.event_id for e in reclaimable] == ["evt-1"]
+    finally:
+        conn.close()
+
+
+def test_register_worker_inserts_then_upserts(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(conn, "worker-a", ["ch1", "ch2"])
+        row = conn.execute("SELECT channels FROM workers WHERE worker_id = ?", ("worker-a",)).fetchone()
+        assert json.loads(row[0]) == ["ch1", "ch2"]
+
+        register_worker(conn, "worker-a", ["ch3"])  # re-register under the same id
+        rows = conn.execute("SELECT channels FROM workers WHERE worker_id = ?", ("worker-a",)).fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0][0]) == ["ch3"]
+    finally:
+        conn.close()
+
+
+def test_heartbeat_updates_last_heartbeat_at(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(conn, "worker-a", ["ch1"])
+        before = conn.execute("SELECT last_heartbeat_at FROM workers WHERE worker_id = ?", ("worker-a",)).fetchone()[0]
+
+        heartbeat(conn, "worker-a")
+
+        after = conn.execute("SELECT last_heartbeat_at FROM workers WHERE worker_id = ?", ("worker-a",)).fetchone()[0]
+        assert after >= before
+    finally:
+        conn.close()
+
+
+def test_list_stale_workers_returns_only_workers_past_staleness_threshold(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(conn, "worker-fresh", ["ch1"])
+        register_worker(conn, "worker-stale", ["ch1"])
+        conn.execute(
+            "UPDATE workers SET last_heartbeat_at = datetime('now', '-1 hour') WHERE worker_id = ?",
+            ("worker-stale",),
+        )
+        conn.commit()
+
+        stale = list_stale_workers(conn, staleness_seconds=60.0)
+
+        assert stale == ["worker-stale"]
+    finally:
+        conn.close()
+
+
+def test_claim_events_concurrent_workers_never_double_claim(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    setup_conn = connect(db_path)
+    try:
+        insert_events(setup_conn, [_make_event(f"evt-{i}") for i in range(20)])
+    finally:
+        setup_conn.close()
+
+    claimed_ids: list[str] = []
+    claimed_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def _worker(worker_id: str) -> None:
+        conn = connect(db_path)
+        try:
+            while True:
+                claimed = claim_events(conn, "ch1", worker_id, limit=1, lease_seconds=60.0)
+                if not claimed:
+                    return
+                with claimed_lock:
+                    claimed_ids.extend(event.event_id for event in claimed)
+        except BaseException as exc:  # pragma: no cover - surfaced via `errors` assertion below
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=_worker, args=(f"worker-{i}",)) for i in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert sorted(claimed_ids) == sorted(f"evt-{i}" for i in range(20))
+    assert len(claimed_ids) == len(set(claimed_ids))
+
+
+class _CommitFailingConnection:
+    """Duck-typed `sqlite3.Connection` stand-in that fails `commit()` — used to exercise
+    `claim_events`'s rollback-on-failure path without relying on a specific real SQLite error."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+        self.rolled_back = False
+
+    def execute(self, *args: object, **kwargs: object) -> sqlite3.Cursor:
+        return self._real.execute(*args, **kwargs)  # type: ignore[arg-type]
+
+    def commit(self) -> None:
+        raise RuntimeError("boom")
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+        self._real.rollback()
+
+
+def test_claim_events_rolls_back_on_failure(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    real_conn = connect(db_path)
+    try:
+        insert_events(real_conn, [_make_event("evt-1")])
+        proxy = _CommitFailingConnection(real_conn)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            claim_events(proxy, "ch1", "worker-a", limit=10, lease_seconds=60.0)  # type: ignore[arg-type]
+
+        assert proxy.rolled_back is True
+        row = real_conn.execute("SELECT claimed_by FROM events WHERE event_id = ?", ("evt-1",)).fetchone()
+        assert row[0] is None
+    finally:
+        real_conn.close()

@@ -88,11 +88,11 @@ def insert_nanobar(conn: sqlite3.Connection, nanobar: Nanobar) -> None:
             """
             INSERT INTO nanobars (
                 nanobar_id, schema_version, system_name, system_version, nanobar_type,
-                request_object_id, response_object_id, regression_weight,
+                request_object_id, response_object_id, regression_weight, criticality,
                 endpoint_scenario_frequency_json, monitor_target_refs_json,
                 label, scenario_description, component_source_description,
                 domain, source_info_json, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 nanobar.nanobar_id,
@@ -103,6 +103,7 @@ def insert_nanobar(conn: sqlite3.Connection, nanobar: Nanobar) -> None:
                 nanobar.request_object_id,
                 nanobar.response_object_id,
                 nanobar.regression_weight,
+                nanobar.criticality,
                 json.dumps(nanobar.endpoint_scenario_frequency),
                 json.dumps(
                     [
@@ -128,22 +129,39 @@ def update_nanobar(
     scenario_description: str | None = None,
     component_source_description: str | None = None,
     domain: str | None = None,
+    criticality: float,
 ) -> None:
     """Overwrites the human-navigation fields with exactly the values given — partial-
     update ("keep unspecified fields as-is") semantics belong to the caller, e.g. by reading
     the current `Nanobar` first and merging, not to this function. `source_info` is
     deliberately not settable here — it's auto-derived structured data (see
     `nanobar_api.telemetry`), not a human-edited field, same category as `monitor_target_refs`.
+    `criticality` is human-editable (unlike `regression_weight`, which is derived) — same
+    partial-update contract as the other fields here, the caller supplies the current value
+    when it isn't the one changing. Deliberately has no default: unlike the other fields,
+    which merely no-op back to `None`/unchanged if forgotten, a silent numeric default here
+    would quietly overwrite a real criticality value the caller never meant to touch.
     """
     with conn:
         conn.execute(
             """
             UPDATE nanobars
-            SET label = ?, scenario_description = ?, component_source_description = ?, domain = ?
+            SET label = ?, scenario_description = ?, component_source_description = ?, domain = ?,
+                criticality = ?
             WHERE nanobar_id = ?
             """,
-            (label, scenario_description, component_source_description, domain, nanobar_id),
+            (label, scenario_description, component_source_description, domain, criticality, nanobar_id),
         )
+
+
+def set_regression_weight(conn: sqlite3.Connection, nanobar_id: str, regression_weight: float) -> None:
+    """A dedicated setter, not folded into `update_nanobar` above — `regression_weight` is a
+    derived/materialized value (`nanobar_api.taxonomy.compute_regression_weight`), not a
+    human-navigation field with partial-update semantics, same category distinction
+    `set_review_status`/`set_brick_scenario` already draw elsewhere in this module.
+    """
+    with conn:
+        conn.execute("UPDATE nanobars SET regression_weight = ? WHERE nanobar_id = ?", (regression_weight, nanobar_id))
 
 
 def get_nanobar(conn: sqlite3.Connection, nanobar_id: str) -> Nanobar | None:
@@ -169,6 +187,7 @@ def _row_to_nanobar(row: sqlite3.Row) -> Nanobar:
         request_object_id=row["request_object_id"],
         response_object_id=row["response_object_id"],
         regression_weight=row["regression_weight"],
+        criticality=row["criticality"],
         endpoint_scenario_frequency=json.loads(row["endpoint_scenario_frequency_json"]),
         monitor_target_refs=[
             MonitorTargetRef(target_type=ref["target_type"], stable_name=ref["stable_name"])

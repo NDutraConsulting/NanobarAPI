@@ -1,0 +1,12 @@
+{
+  "name": "nanobar-dashboard-web-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only test tooling for demo/web/*'s static per-page JS bundles -- no bundler, no build step, just Node's built-in test runner plus jsdom for DOM stubs. Run with `npm test` from this directory. Not wired into ../../scripts/test's Python verification loop, which has no Node dependency otherwise.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

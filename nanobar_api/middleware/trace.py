@@ -40,6 +40,14 @@ if TYPE_CHECKING:
 current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_trace_id", default=None)
 current_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_span_id", default=None)
 
+#: The active route key ("METHOD /path"), set by `NanobarController.handle()` at controller
+#: entry and reset at exit — `nanobar_api.orm.NanobarORMWrapper`'s SQLAlchemy event listeners
+#: read this to stamp a `route_key` on `orm-request-response` captures, the same correlation key
+#: `nanobar_api.bricks.binding` already uses for validator/controller layers. Named
+#: `current_controller_name` in the source spec; `route_key` matches the value actually threaded
+#: through this codebase's capture call sites instead of introducing a second, parallel concept.
+current_route_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_route_key", default=None)
+
 _SCOPE_KEY = "nanobar.trace"
 
 #: Environment variable that opts into local trace capture — see `configure_tracing`.

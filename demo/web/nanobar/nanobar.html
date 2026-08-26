@@ -8,14 +8,14 @@
 </head>
 <body>
   <nav class="top-nav">
-    <a href="/">Nanobars</a>
-    <a href="/triage">Triage board</a>
-    <a href="/traces">Traces</a>
+    <a href="/admin/nanobar/dashboard">Nanobars</a>
+    <a href="/admin/nanobar/triage">Triage board</a>
+    <a href="/admin/nanobar/traces">Traces</a>
   </nav>
 
   <div class="page">
     <header class="page-header">
-      <p class="back-link"><a href="/">&larr; All nanobars</a></p>
+      <p class="back-link"><a href="/admin/nanobar/dashboard">&larr; All nanobars</a></p>
       <h1 id="nanobar-title" class="page-title">Loading nanobar&hellip;</h1>
       <p id="nanobar-subtitle" class="page-subtitle" hidden></p>
     </header>
@@ -47,10 +47,23 @@
               <span class="edit-field-label">Domain</span>
               <input type="text" id="edit-domain" name="domain" />
             </label>
+            <label class="edit-field">
+              <span class="edit-field-label">Criticality (0.0&ndash;1.0)</span>
+              <input type="number" id="edit-criticality" name="criticality" min="0" max="1" step="0.05" />
+            </label>
             <button type="submit" id="edit-save-btn" class="edit-save-btn">Save</button>
           </form>
           <p id="edit-error" class="edit-error" role="alert" hidden></p>
           <p id="edit-success" class="edit-success" role="status" hidden></p>
+        </div>
+      </section>
+
+      <section id="coverage-gaps-section" class="coverage-gaps-section" hidden aria-labelledby="coverage-gaps-heading">
+        <h2 id="coverage-gaps-heading" class="section-heading">Missing coverage</h2>
+        <div id="coverage-gaps-status" class="coverage-gaps-status" hidden></div>
+        <div id="coverage-gaps-list" class="coverage-gaps-list" hidden></div>
+        <div id="coverage-gaps-empty" class="empty-state" hidden>
+          <p class="empty-state-title">Every required scenario for this nanobar type has a bound brick.</p>
         </div>
       </section>
 

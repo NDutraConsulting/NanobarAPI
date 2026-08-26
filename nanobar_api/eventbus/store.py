@@ -31,6 +31,15 @@ CREATE TABLE IF NOT EXISTS workers (
     started_at TEXT NOT NULL,
     last_heartbeat_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS worker_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL,
+    event_id TEXT,
+    error TEXT NOT NULL,
+    logged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_worker_log_worker_id ON worker_log(worker_id, logged_at);
 """
 
 
@@ -144,6 +153,156 @@ def list_trace_ids(conn: sqlite3.Connection, channel: str, limit: int = 100) -> 
         )
         for row in rows
     ]
+
+
+def claim_events(
+    conn: sqlite3.Connection, channel: str, worker_id: str, limit: int, lease_seconds: float
+) -> list[Event]:
+    """Atomically claim up to `limit` free (or lease-expired) events on `channel`.
+
+    Wraps a `BEGIN IMMEDIATE` transaction around select-then-update, per
+    `regression-brick-system-plan.md` §9: the same read-then-write race
+    `focusari_kahnban` hit with its position-shift `UPDATE`, fixed the same way — an explicit
+    atomic claim step, not a bare read, so two workers polling the same channel never both
+    select and act on the same row.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = conn.execute(
+            """
+            SELECT event_id, channel, trace_id, span_id, recorded_at_ns, monotonic_ns, payload_json
+            FROM events
+            WHERE channel = ? AND processed_at IS NULL AND (claimed_by IS NULL OR lease_expires_at < datetime('now'))
+            ORDER BY recorded_at_ns
+            LIMIT ?
+            """,
+            (channel, limit),
+        ).fetchall()
+        event_ids = [row[0] for row in rows]
+        if event_ids:
+            placeholders = ",".join("?" for _ in event_ids)
+            conn.execute(
+                f"""
+                UPDATE events SET claimed_by = ?, lease_expires_at = datetime('now', ?)
+                WHERE event_id IN ({placeholders})
+                """,
+                (worker_id, f"{lease_seconds} seconds", *event_ids),
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+    return [
+        Event(
+            event_id=row[0],
+            channel=row[1],
+            trace_id=row[2],
+            span_id=row[3],
+            recorded_at_ns=row[4],
+            monotonic_ns=row[5],
+            payload=json.loads(row[6]),
+        )
+        for row in rows
+    ]
+
+
+def ack_event(conn: sqlite3.Connection, event_id: str) -> None:
+    """Mark a claimed event processed and release its claim."""
+    with conn:
+        conn.execute(
+            """
+            UPDATE events SET processed_at = datetime('now'), claimed_by = NULL, lease_expires_at = NULL
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+
+
+def fail_event(conn: sqlite3.Connection, event_id: str, error: str) -> None:
+    """Record a failed processing attempt and release the claim early, rather than waiting out
+    the lease — so another worker can retry it on its very next poll instead of idling until
+    `lease_expires_at` passes on its own.
+    """
+    with conn:
+        conn.execute(
+            """
+            UPDATE events
+            SET attempt_count = attempt_count + 1, last_error = ?, claimed_by = NULL, lease_expires_at = NULL
+            WHERE event_id = ?
+            """,
+            (error, event_id),
+        )
+
+
+def register_worker(conn: sqlite3.Connection, worker_id: str, channels: Sequence[str]) -> None:
+    """Upsert a worker's liveness row — registers it if new, refreshes its channel list and
+    heartbeat if it already exists (a worker restarting under the same id re-registers cleanly).
+    """
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO workers (worker_id, channels, started_at, last_heartbeat_at)
+            VALUES (?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(worker_id) DO UPDATE SET
+                channels = excluded.channels,
+                last_heartbeat_at = excluded.last_heartbeat_at
+            """,
+            (worker_id, json.dumps(list(channels))),
+        )
+
+
+def heartbeat(conn: sqlite3.Connection, worker_id: str) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE workers SET last_heartbeat_at = datetime('now') WHERE worker_id = ?",
+            (worker_id,),
+        )
+
+
+def list_stale_workers(conn: sqlite3.Connection, staleness_seconds: float) -> list[str]:
+    """Return worker_ids whose last heartbeat is older than `staleness_seconds`.
+
+    A liveness ledger, not a partition-assignment protocol: row-level lease claiming already
+    prevents double-processing on its own, so this exists only for something external — a
+    supervisor, an ops dashboard, an alert rule — to answer "which workers are actually alive."
+    """
+    rows = conn.execute(
+        "SELECT worker_id FROM workers WHERE last_heartbeat_at < datetime('now', ?)",
+        (f"-{staleness_seconds} seconds",),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def insert_worker_log(
+    conn: sqlite3.Connection, *, worker_id: str, event_id: str | None, error: str, logged_at: str
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO worker_log (worker_id, event_id, error, logged_at) VALUES (?, ?, ?, ?)",
+            (worker_id, event_id, error, logged_at),
+        )
+
+
+def list_worker_log(
+    conn: sqlite3.Connection, worker_id: str | None = None, limit: int = 100
+) -> list[tuple[str, str | None, str, str]]:
+    """Returns raw `(worker_id, event_id, error, logged_at)` tuples — `nanobar_api.worker_utils`
+    is what wraps these into `WorkerLogEntry`, the same layering `eventbus/store.py` already
+    keeps from `bricks/store.py`'s dataclass-typed functions."""
+    if worker_id is None:
+        rows = conn.execute(
+            "SELECT worker_id, event_id, error, logged_at FROM worker_log ORDER BY logged_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT worker_id, event_id, error, logged_at FROM worker_log
+            WHERE worker_id = ? ORDER BY logged_at DESC LIMIT ?
+            """,
+            (worker_id, limit),
+        ).fetchall()
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 
 def get_events_by_trace_id(conn: sqlite3.Connection, trace_id: str, channel: str | None = None) -> list[Event]:
