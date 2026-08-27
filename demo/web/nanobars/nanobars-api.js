@@ -4,18 +4,38 @@
 // throws if the network request itself fails (no response at all).
 // No DOM access happens in this file.
 
+import { csrfHeader } from "../shared/csrf.js";
+
 const BASE_URL = "/admin/nanobar/api/nanobars";
 
 /**
- * GET /admin/nanobar/api/nanobars
- * Fetches every nanobar (no target_type filter) so the page can group them
- * client-side.
+ * GET /admin/nanobar/api/nanobars?nanobar_type=&domain=&q=&page=&page_size=
+ * @param {{nanobarType?: string, domain?: string, q?: string, page?: number, pageSize?: number}} [options]
  * @returns {Promise<{status: string, msg: string, result: {type: string, data: any}}>}
  */
-export async function fetchNanobars() {
-  const response = await fetch(BASE_URL, {
+export async function fetchNanobars({ nanobarType = "", domain, q = "", page = 1, pageSize } = {}) {
+  const params = new URLSearchParams();
+  if (nanobarType) params.set("nanobar_type", nanobarType);
+  // domain's own "All domains" value is "" (no filter) same as the others, but a real,
+  // meaningful domain value can *also* be "" (a root-level, un-Mounted route) -- so this can't
+  // use nanobarType's truthiness check, only "was a value passed in at all."
+  if (domain !== undefined) params.set("domain", domain);
+  if (q) params.set("q", q);
+  params.set("page", String(page));
+  if (pageSize) params.set("page_size", String(pageSize));
+
+  const response = await fetch(`${BASE_URL}?${params}`, {
     method: "GET",
     headers: { Accept: "application/json" },
+  });
+  return response.json();
+}
+
+/** POST /admin/nanobar/api/generate-bricks */
+export async function generateBricks() {
+  const response = await fetch("/admin/nanobar/api/generate-bricks", {
+    method: "POST",
+    headers: { ...csrfHeader() },
   });
   return response.json();
 }

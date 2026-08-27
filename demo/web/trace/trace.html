@@ -12,12 +12,14 @@
       <a href="/admin/nanobar/dashboard">Nanobars</a>
       <a href="/admin/nanobar/triage">Triage board</a>
       <a href="/admin/nanobar/traces" aria-current="page">Traces</a>
+      <a href="/admin/nanobar/workers">Workers</a>
+      <a href="/admin/nanobar/dashboard/settings">Settings</a>
     </nav>
 
     <header class="page-header">
       <a class="back-link" href="/admin/nanobar/traces">&larr; Back to traces</a>
       <h1 id="trace-title" class="page-title">Loading trace&hellip;</h1>
-      <p class="page-subtitle">Span timeline for one captured trace.</p>
+      <p class="page-subtitle">Spans on the left, full span detail on the right.</p>
     </header>
 
     <main class="page-main">
@@ -26,12 +28,21 @@
       <p id="trace-disclaimer" class="trace-disclaimer" hidden>
         Spans are ordered by completion time, not start time &mdash; <code>EventBusTraceMiddleware</code>
         records a single completion timestamp (<code>monotonic_ns</code>) per span, not a start-and-end pair.
-        The offsets and marker positions below show each span&rsquo;s position relative to the first span in
-        this trace; they are <strong>not</strong> individual span durations.
+        The offsets below show each span&rsquo;s position relative to the first span in this trace; they are
+        <strong>not</strong> individual span durations.
       </p>
 
-      <div id="spans-wrap" class="spans-wrap" hidden>
-        <div id="spans-list" class="spans-list"></div>
+      <div id="trace-layout" class="trace-layout" hidden>
+        <div class="spans-pane">
+          <ul id="spans-list" class="spans-list"></ul>
+        </div>
+
+        <div class="span-detail-pane">
+          <div id="span-detail-empty" class="span-detail-empty">
+            <p>Select a span on the left to see its full detail.</p>
+          </div>
+          <div id="span-detail" class="span-detail" hidden></div>
+        </div>
       </div>
 
       <div id="trace-empty" class="empty-state" hidden>
@@ -42,21 +53,21 @@
   </div>
 
   <template id="span-row-template">
-    <article class="span-row">
-      <div class="span-row-top">
+    <li class="span-row">
+      <button type="button" class="span-row-btn">
         <span class="span-offset"></span>
         <span class="span-name"></span>
+        <span class="span-nanobar-type-badge" hidden></span>
         <span class="span-status-code"></span>
-      </div>
-      <div class="span-track">
-        <div class="span-marker"></div>
-      </div>
-      <div class="span-row-bottom">
-        <span class="span-method"></span>
-        <span class="span-route"></span>
-        <code class="span-id"></code>
-      </div>
-    </article>
+      </button>
+    </li>
+  </template>
+
+  <template id="span-detail-field-template">
+    <div class="span-detail-field">
+      <span class="span-detail-field-label"></span>
+      <span class="span-detail-field-value"></span>
+    </div>
   </template>
 
   <script type="module" src="/static/trace/trace-controller.js"></script>

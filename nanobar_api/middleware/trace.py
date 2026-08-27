@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import contextvars
 import os
+import sqlite3
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import propagate, trace
@@ -106,12 +107,30 @@ class EventBusTraceMiddleware:
     configured for some other reason (e.g. the app's own external OTLP export setup), this
     middleware is a correct no-op: it still checks `scope["type"]` and passes non-HTTP
     scopes through, but emits nothing.
+
+    `is_enabled`, when given, is checked fresh on every request as a second, independent
+    on/off gate alongside the tracer-provider check above -- for a *runtime-toggleable*
+    on/off switch, since the OTel tracer provider itself is a process-wide global that, by
+    both the OTel API's own contract and `configure_tracing()`'s own idempotency guarantee,
+    can only ever move from no-op to real, never back. An app that wants a real, reversible
+    "turn trace capture on/off" control (e.g. a settings page) passes a callable backed by its
+    own durable flag (see `SQLiteTraceCaptureToggle` below) instead of fighting that global.
+    `None` (the default) means "always enabled once a real provider exists," i.e. today's
+    behavior, unchanged for callers that don't need a toggle.
     """
 
-    def __init__(self, app: ASGIApp, repository: EventQueueRepository, channel: str = "trace") -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        repository: EventQueueRepository,
+        channel: str = "trace",
+        *,
+        is_enabled: Callable[[], bool] | None = None,
+    ) -> None:
         self.app = app
         self.repository = repository
         self.channel = channel
+        self.is_enabled = is_enabled
         configure_tracing()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -129,6 +148,9 @@ class EventBusTraceMiddleware:
         tracer_provider = trace.get_tracer_provider()
         if isinstance(tracer_provider, trace.NoOpTracerProvider | trace.ProxyTracerProvider):
             # No real tracer configured: nothing to correlate, so don't manufacture spans/events.
+            await self.app(scope, receive, send)
+            return
+        if self.is_enabled is not None and not self.is_enabled():
             await self.app(scope, receive, send)
             return
 
@@ -296,3 +318,56 @@ def _match_routes(routes: Sequence[BaseRoute], scope: Scope) -> str | None:
             return f"{prefix.rstrip('/')}{path_format}"
         return None  # pragma: no cover - defensive: only exotic BaseRoute subclasses (e.g. Host) lack path_format
     return None
+
+
+_TOGGLE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS trace_capture_toggle (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL
+);
+"""
+
+
+class SQLiteTraceCaptureToggle:
+    """A durable, runtime-flippable on/off switch for `EventBusTraceMiddleware`'s `is_enabled`
+    hook -- e.g. for a settings page a human can toggle without restarting the process, which
+    the OTel tracer-provider global (`configure_tracing()`) can't do once it's real (see
+    `EventBusTraceMiddleware`'s own docstring). A single-row table, own schema/file-independent
+    (pass whichever SQLite file your app already treats as durable config storage), same
+    "own `connect()`, fresh connection per call" shape as `nanobar_api.admin_auth.connect`/
+    `nanobar_api.bricks.store.connect`.
+
+    `default_enabled` only takes effect the first time this table is created for a given
+    database file -- a later construction against an already-seeded file (a second worker
+    process, a process restart) always respects whatever the current stored value is, never
+    resets it back to the default.
+    """
+
+    def __init__(self, db_path: str, *, default_enabled: bool) -> None:
+        self._db_path = db_path
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            conn.executescript(_TOGGLE_SCHEMA_SQL)
+            conn.execute(
+                "INSERT OR IGNORE INTO trace_capture_toggle (id, enabled) VALUES (1, ?)",
+                (1 if default_enabled else 0,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def is_enabled(self) -> bool:
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        try:
+            row = conn.execute("SELECT enabled FROM trace_capture_toggle WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        return row is not None and bool(row[0])
+
+    def set_enabled(self, enabled: bool) -> None:
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        try:
+            with conn:
+                conn.execute("UPDATE trace_capture_toggle SET enabled = ? WHERE id = 1", (1 if enabled else 0,))
+        finally:
+            conn.close()

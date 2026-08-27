@@ -14,7 +14,12 @@ from pathlib import Path
 
 from nanobar_api.bricks.schema import Nanobar, RegressionBrick
 
-VENDORED_TAXONOMY_PATH = Path(__file__).resolve().parent / "nanobar_type.json"
+#: The framework's own pinned baseline taxonomy -- a "lock file" in the same spirit as
+#: `uv.lock`: a static, versioned, checked-in default. Dynamic, runtime-registered entries
+#: (per-channel `"worker-{channel}"` coverage rules, etc.) live in a separate SQLite database
+#: instead -- see `nanobar_api/dynamic_taxonomy.py` -- since a lock file is deliberately *not*
+#: writable at runtime, and per-channel rules genuinely need to be.
+VENDORED_TAXONOMY_PATH = Path(__file__).resolve().parent / "nanobar.types.lock"
 
 
 @dataclass(frozen=True)
@@ -88,25 +93,56 @@ def load_taxonomy(paths: Sequence[Path] = ()) -> NanobarTypeTaxonomy:
     return taxonomy
 
 
+def resolve_taxonomy_entry(taxonomy: NanobarTypeTaxonomy, nanobar_type: str) -> NanobarTypeEntry | None:
+    """Exact match first; then two dynamic-suffix conventions this project's own runtime
+    produces (`nanobar_api/telemetry.py`'s `NanobarProps.type` call sites), neither of which can
+    be pre-enumerated as literal keys in the vendored taxonomy JSON:
+
+    - `f"replay-{original_nanobar_type}"` (the dashboard's Run tab, `demo/dashboard/api.py`) --
+      resolved by stripping the prefix and resolving the *original* type instead (recursively,
+      so a replay of a worker nanobar still falls through to the `"worker-"` case below).
+      Replaying doesn't change what "covered" means for that original layer.
+    - `f"worker-{channel}"` (`NanobarWorker._process_one`) -- `channel` varies per app/
+      deployment, so this falls back to one channel-agnostic `"worker"` entry rather than
+      requiring one entry per channel (which would go stale the moment a new channel appears).
+
+    An unrecognized type matching neither convention still resolves to `None` — this project's
+    own documented Open Decision (`nanobar_type_taxonomy_and_expected_coverage_buildplan-with-
+    tasks.md`): "keeping the taxonomy in sync is an ongoing dependency," left visible rather
+    than papered over with a guess.
+    """
+    entry = taxonomy.get(nanobar_type)
+    if entry is not None:
+        return entry
+    if nanobar_type.startswith("replay-"):
+        return resolve_taxonomy_entry(taxonomy, nanobar_type[len("replay-") :])
+    if nanobar_type.startswith("worker-"):
+        return taxonomy.get("worker")
+    return None
+
+
 def compute_regression_weight(
     nanobar: Nanobar, bricks: Sequence[RegressionBrick], taxonomy: NanobarTypeTaxonomy
 ) -> float:
     """Coverage-completeness score, scaled by criticality: sum of covered required-scenario
-    weights (from `taxonomy[nanobar.nanobar_type]`) over sum of all required-scenario weights
-    defined for that type, times `nanobar.criticality`. `bricks` must already be filtered to the
-    ones actually bound to `nanobar` (e.g. `bricks_store.get_bricks_for_nanobar`'s return value)
-    — this function does no DB access itself, to stay unit-testable without one.
+    weights (from `resolve_taxonomy_entry(taxonomy, nanobar.nanobar_type)`) over sum of all
+    required-scenario weights defined for that type, times `nanobar.criticality`. `bricks` must
+    already be filtered to the ones actually bound to `nanobar` (e.g.
+    `bricks_store.get_bricks_for_nanobar`'s return value) — this function does no DB access
+    itself, to stay unit-testable without one.
 
     Two edge cases, both deliberate, not oversights:
-    - **Unknown `nanobar_type` (no taxonomy entry) — returns `nanobar.regression_weight`
-      unchanged**, not a guessed formula. A real `nanobar_type` with no taxonomy entry is exactly
-      this doc's own Open Decision 1 ("keeping the taxonomy in sync is an ongoing dependency");
-      inventing a fallback here would silently paper over that gap instead of leaving it visible.
+    - **Unresolvable `nanobar_type` (no exact taxonomy entry, and not a recognized
+      `"replay-"`/`"worker-"` dynamic form — see `resolve_taxonomy_entry`) — returns
+      `nanobar.regression_weight` unchanged**, not a guessed formula. A real `nanobar_type` with
+      no taxonomy entry is exactly this doc's own Open Decision 1 ("keeping the taxonomy in sync
+      is an ongoing dependency"); inventing a fallback here would silently paper over that gap
+      instead of leaving it visible.
     - **Zero required scenarios defined for the type — returns `nanobar.criticality` alone.**
       Coverage-completeness is undefined with nothing to be complete *about*; criticality is
       still a real, human-set signal worth returning rather than an arbitrary `0.0`.
     """
-    entry = taxonomy.get(nanobar.nanobar_type)
+    entry = resolve_taxonomy_entry(taxonomy, nanobar.nanobar_type)
     if entry is None:
         return nanobar.regression_weight
 
@@ -124,12 +160,13 @@ def compute_regression_weight(
 def detect_coverage_gaps(
     nanobar: Nanobar, bricks: Sequence[RegressionBrick], taxonomy: NanobarTypeTaxonomy
 ) -> list[str]:
-    """Returns the required scenario types from `taxonomy[nanobar.nanobar_type]` with no
-    corresponding bound brick — the literal "what's missing" list. `bricks` must already be
-    filtered to the ones bound to `nanobar`, same contract as `compute_regression_weight` above.
-    Empty (not guessed at) for an unknown `nanobar_type` — same Open Decision 1 reasoning.
+    """Returns the required scenario types from `resolve_taxonomy_entry(taxonomy,
+    nanobar.nanobar_type)` with no corresponding bound brick — the literal "what's missing"
+    list. `bricks` must already be filtered to the ones bound to `nanobar`, same contract as
+    `compute_regression_weight` above. Empty (not guessed at) for an unresolvable
+    `nanobar_type` — same Open Decision 1 reasoning.
     """
-    entry = taxonomy.get(nanobar.nanobar_type)
+    entry = resolve_taxonomy_entry(taxonomy, nanobar.nanobar_type)
     if entry is None:
         return []
 

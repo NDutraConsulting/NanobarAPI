@@ -11,6 +11,8 @@
     <a href="/admin/nanobar/dashboard">Nanobars</a>
     <a href="/admin/nanobar/triage">Triage board</a>
     <a href="/admin/nanobar/traces">Traces</a>
+    <a href="/admin/nanobar/workers">Workers</a>
+    <a href="/admin/nanobar/dashboard/settings">Settings</a>
   </nav>
 
   <div class="page">
@@ -65,6 +67,19 @@
         <div id="coverage-gaps-empty" class="empty-state" hidden>
           <p class="empty-state-title">Every required scenario for this nanobar type has a bound brick.</p>
         </div>
+        <div id="coverage-needs-classification" class="needs-classification" hidden>
+          <p class="needs-classification-title">This nanobar type needs classification</p>
+          <p class="needs-classification-text">
+            <code id="needs-classification-type"></code> has no taxonomy entry, so coverage can't be computed for
+            it yet &mdash; add it to <code>nanobar.types.lock</code> or an app override file.
+          </p>
+          <p id="needs-classification-span" class="needs-classification-span" hidden>
+            Evidence: <a id="needs-classification-span-link" class="needs-classification-span-link"></a>
+          </p>
+          <p id="needs-classification-no-span" class="needs-classification-no-span" hidden>
+            No captured span with this type yet.
+          </p>
+        </div>
       </section>
 
       <section class="bricks-section" aria-labelledby="bricks-heading">
@@ -72,18 +87,129 @@
 
         <div id="bricks-status" class="bricks-status" hidden></div>
 
-        <div id="bricks-table-wrap" class="bricks-table-wrap" hidden>
-          <table id="bricks-table" class="bricks-table">
-            <thead>
-              <tr>
-                <th scope="col">Request</th>
-                <th scope="col">Status</th>
-                <th scope="col">Content hash</th>
-                <th scope="col">Review</th>
-              </tr>
-            </thead>
-            <tbody id="bricks-table-body"></tbody>
-          </table>
+        <div id="bricks-layout" class="bricks-layout" hidden>
+          <div class="bricks-pane">
+            <ul id="bricks-list" class="bricks-list"></ul>
+          </div>
+
+          <div class="brick-detail-pane">
+            <div id="brick-detail-empty" class="brick-detail-empty">
+              <p>Select a brick on the left to see its detail, or run it.</p>
+            </div>
+
+            <div id="brick-detail-panel" class="brick-detail-panel" hidden>
+              <div class="brick-tabs" role="tablist">
+                <button type="button" id="tab-detail-btn" class="brick-tab-btn brick-tab-btn-active" role="tab" aria-selected="true">
+                  Detail
+                </button>
+                <button type="button" id="tab-run-btn" class="brick-tab-btn" role="tab" aria-selected="false">Run</button>
+              </div>
+
+              <div id="tab-detail-panel" class="brick-tab-panel" role="tabpanel">
+                <div class="brick-summary-top">
+                  <h3 id="brick-detail-heading" class="brick-detail-heading"></h3>
+                  <span id="review-pill" class="review-pill"></span>
+                </div>
+
+                <dl id="brick-summary-grid" class="brick-summary-grid">
+                  <div class="summary-row">
+                    <dt>Brick ID</dt>
+                    <dd id="field-brick-id"></dd>
+                  </div>
+                  <div class="summary-row">
+                    <dt>Content hash</dt>
+                    <dd><code id="field-content-hash" class="code-inline"></code></dd>
+                  </div>
+                  <div class="summary-row">
+                    <dt>Schema version</dt>
+                    <dd id="field-schema-version"></dd>
+                  </div>
+                  <div class="summary-row">
+                    <dt>Brick version</dt>
+                    <dd id="field-brick-version"></dd>
+                  </div>
+                  <div class="summary-row">
+                    <dt>Created by</dt>
+                    <dd id="field-created-by"></dd>
+                  </div>
+                  <div class="summary-row">
+                    <dt>Source</dt>
+                    <dd id="field-source"></dd>
+                  </div>
+                  <div class="summary-row" id="field-scenario-type-row">
+                    <dt>Scenario type</dt>
+                    <dd id="field-scenario-type"></dd>
+                  </div>
+                </dl>
+
+                <div class="review-controls" aria-labelledby="review-controls-heading">
+                  <h4 id="review-controls-heading" class="review-controls-heading">Set review status</h4>
+                  <div id="review-buttons" class="review-buttons">
+                    <button type="button" class="review-btn" data-status="new">New</button>
+                    <button type="button" class="review-btn" data-status="reviewed">Reviewed</button>
+                    <button type="button" class="review-btn" data-status="flagged">Flagged</button>
+                    <button type="button" class="review-btn" data-status="promoted">Promoted</button>
+                  </div>
+                  <p id="review-error" class="review-error" role="alert" hidden></p>
+                </div>
+
+                <div class="scenario-controls" aria-labelledby="scenario-controls-heading">
+                  <h4 id="scenario-controls-heading" class="scenario-controls-heading">Edit scenario</h4>
+                  <form id="scenario-form" class="scenario-form">
+                    <label class="scenario-field">
+                      <span class="scenario-field-label">Label</span>
+                      <input type="text" id="scenario-label" name="regression_scenario_label" />
+                    </label>
+                    <label class="scenario-field">
+                      <span class="scenario-field-label">Description</span>
+                      <textarea id="scenario-description" name="description" rows="2"></textarea>
+                    </label>
+                    <button type="submit" id="scenario-save-btn" class="scenario-save-btn">Save</button>
+                  </form>
+                  <p id="scenario-error" class="scenario-error" role="alert" hidden></p>
+                  <p id="scenario-success" class="scenario-success" role="status" hidden></p>
+                </div>
+
+                <div class="tags-controls" aria-labelledby="tags-controls-heading">
+                  <h4 id="tags-controls-heading" class="tags-controls-heading">Tags</h4>
+                  <ul id="tags-list" class="tags-list"></ul>
+                  <form id="tag-add-form" class="tag-add-form">
+                    <input type="text" id="tag-add-input" placeholder="Add a tag" />
+                    <button type="submit" id="tag-add-btn" class="tag-add-btn">Add</button>
+                  </form>
+                  <p id="tags-error" class="tags-error" role="alert" hidden></p>
+                </div>
+
+                <div class="payload-section">
+                  <h4 class="payload-heading">Request</h4>
+                  <pre id="request-json" class="json-block"></pre>
+                </div>
+
+                <div class="payload-section">
+                  <h4 class="payload-heading">Response</h4>
+                  <pre id="response-json" class="json-block"></pre>
+                </div>
+              </div>
+
+              <div id="tab-run-panel" class="brick-tab-panel" role="tabpanel" hidden>
+                <p class="run-intro">
+                  Replays this brick's captured request against a shadow app instance (its own database for
+                  anything the request would write to -- your real local data is never touched), then compares
+                  the fresh response to what was originally captured.
+                </p>
+                <div class="run-actions">
+                  <button type="button" id="run-btn" class="run-btn">Run</button>
+                  <button type="button" id="refresh-btn" class="refresh-btn" disabled>Refresh</button>
+                </div>
+                <p id="run-status" class="run-status" hidden></p>
+                <div id="run-verdict" class="run-verdict" hidden></div>
+                <div id="run-spans-wrap" class="run-spans-wrap" hidden>
+                  <h4 class="run-spans-heading">Spans on this replay's trace</h4>
+                  <ul id="run-spans-list" class="run-spans-list"></ul>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="bricks-empty" class="empty-state" hidden>
@@ -94,17 +220,28 @@
   </div>
 
   <template id="brick-row-template">
-    <tr class="brick-row">
-      <td class="brick-request">
-        <a class="brick-link">
-          <span class="brick-method"></span>
-          <span class="brick-path"></span>
-        </a>
-      </td>
-      <td class="brick-status-code"></td>
-      <td class="brick-hash"></td>
-      <td><span class="review-pill"></span></td>
-    </tr>
+    <li class="brick-row">
+      <button type="button" class="brick-row-btn">
+        <span class="brick-method"></span>
+        <span class="brick-path"></span>
+        <span class="review-pill"></span>
+      </button>
+    </li>
+  </template>
+
+  <template id="tag-chip-template">
+    <li class="tag-chip">
+      <span class="tag-chip-text"></span>
+      <button type="button" class="tag-chip-remove" aria-label="Remove tag">&times;</button>
+    </li>
+  </template>
+
+  <template id="run-span-row-template">
+    <li class="run-span-row">
+      <span class="run-span-name"></span>
+      <span class="run-span-nanobar-type" hidden></span>
+      <span class="run-span-status"></span>
+    </li>
   </template>
 
   <script type="module" src="/static/nanobar/nanobar-controller.js"></script>

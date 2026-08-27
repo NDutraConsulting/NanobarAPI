@@ -8,9 +8,11 @@ import pytest
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 
+from nanobar_api.dynamic_taxonomy import connect as connect_dynamic_taxonomy, get_entry, get_or_create_entry
 from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 from nanobar_api.eventbus.store import connect, get_unprocessed, insert_events
+from nanobar_api.taxonomy import ExpectedScenario, NanobarTypeEntry
 from nanobar_api.telemetry import NanobarTelemetry
 from nanobar_api.worker_utils import get_worker_log
 from nanobar_api.workers import NanobarWorker, WorkerConfig
@@ -35,9 +37,16 @@ class _RecordingWorker(NanobarWorker):
         claim_limit: int = 10,
         lease_seconds: float = 30.0,
         log_dir: str = "logs",
+        dynamic_taxonomy_conn: sqlite3.Connection | None = None,
     ) -> None:
         super().__init__(
-            worker_id, conn, telemetry, claim_limit=claim_limit, lease_seconds=lease_seconds, log_dir=log_dir
+            worker_id,
+            conn,
+            telemetry,
+            claim_limit=claim_limit,
+            lease_seconds=lease_seconds,
+            log_dir=log_dir,
+            dynamic_taxonomy_conn=dynamic_taxonomy_conn,
         )
         self.processed: list[str] = []
         self.compensated: list[str] = []
@@ -56,15 +65,28 @@ def _telemetry() -> NanobarTelemetry:
 
 
 def _make_worker(
-    tmp_path: Path, channels: tuple[str, ...] = ("work",), mode: Literal["cron", "listening"] = "listening"
+    tmp_path: Path,
+    channels: tuple[str, ...] = ("work",),
+    mode: Literal["cron", "listening"] = "listening",
+    *,
+    expected_scenarios: dict[str, ExpectedScenario] | None = None,
+    dynamic_taxonomy_conn: sqlite3.Connection | None = None,
 ) -> _RecordingWorker:
     conn = connect(str(tmp_path / "events.db"))
 
     class _Worker(_RecordingWorker):
         pass
 
-    _Worker.config = WorkerConfig(channels=channels, mode=mode)
-    return _Worker("worker-1", conn, _telemetry(), claim_limit=10, lease_seconds=30.0, log_dir=str(tmp_path / "logs"))
+    _Worker.config = WorkerConfig(channels=channels, mode=mode, expected_scenarios=expected_scenarios)
+    return _Worker(
+        "worker-1",
+        conn,
+        _telemetry(),
+        claim_limit=10,
+        lease_seconds=30.0,
+        log_dir=str(tmp_path / "logs"),
+        dynamic_taxonomy_conn=dynamic_taxonomy_conn,
+    )
 
 
 def _insert(
@@ -84,6 +106,23 @@ def test_run_once_claims_processes_and_acks(tmp_path: Path) -> None:
 
     assert worker.processed == ["evt-1"]
     assert get_unprocessed(worker.conn, "work") == []
+
+
+def test_run_once_registers_and_heartbeats_even_in_cron_mode(tmp_path: Path) -> None:
+    # mode="cron" workers never call run_forever() -- their lifecycle is owned by an external
+    # scheduler calling run_once() directly. Registration/heartbeat must still happen, or a
+    # cron-mode worker would never show up in store.list_workers()'s lifecycle view at all.
+    worker = _make_worker(tmp_path, channels=("work",), mode="cron")
+    _insert(worker.conn, "evt-1")
+
+    worker.run_once()
+
+    row = worker.conn.execute(
+        "SELECT worker_id, mode, poll_interval_s FROM workers WHERE worker_id = ?", ("worker-1",)
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "worker-1"
+    assert row[1] == "cron"
 
 
 def test_run_once_processes_multiple_channels(tmp_path: Path) -> None:
@@ -158,3 +197,66 @@ def test_run_forever_registers_worker_processes_and_heartbeats(tmp_path: Path, m
     assert row is not None
     assert row[0] == "worker-1"
     assert sleep_calls["n"] == 2
+
+
+# ------------------------------------------------------ dynamic taxonomy self-registration ---
+
+
+_EXPECTED_SCENARIOS = {
+    "success": ExpectedScenario(weight=1.0, required=True, synthesizable=False),
+    "conflict": ExpectedScenario(weight=0.5, required=True, synthesizable=True),
+}
+
+
+def test_process_one_registers_its_own_dynamic_taxonomy_entry_from_config(tmp_path: Path) -> None:
+    dynamic_conn = connect_dynamic_taxonomy(str(tmp_path / "nanobar_type_system.db"))
+    worker = _make_worker(
+        tmp_path, channels=("work",), expected_scenarios=_EXPECTED_SCENARIOS, dynamic_taxonomy_conn=dynamic_conn
+    )
+    _insert(worker.conn, "evt-1", channel="work")
+
+    worker.run_once()
+
+    entry = get_entry(dynamic_conn, "worker", "work")
+    assert entry == NanobarTypeEntry(expected_scenarios=_EXPECTED_SCENARIOS)
+
+
+def test_process_one_does_not_touch_dynamic_taxonomy_when_expected_scenarios_is_unset(tmp_path: Path) -> None:
+    dynamic_conn = connect_dynamic_taxonomy(str(tmp_path / "nanobar_type_system.db"))
+    # No expected_scenarios given -- this worker doesn't opt in, same behavior as before this
+    # feature existed even though a dynamic_taxonomy_conn is available.
+    worker = _make_worker(tmp_path, channels=("work",), dynamic_taxonomy_conn=dynamic_conn)
+    _insert(worker.conn, "evt-1", channel="work")
+
+    worker.run_once()
+
+    assert get_entry(dynamic_conn, "worker", "work") is None
+
+
+def test_process_one_does_not_touch_dynamic_taxonomy_when_no_connection_given(tmp_path: Path) -> None:
+    # expected_scenarios declared, but no dynamic_taxonomy_conn wired -- must not crash, and
+    # must not silently create a database nobody asked for.
+    worker = _make_worker(tmp_path, channels=("work",), expected_scenarios=_EXPECTED_SCENARIOS)
+    _insert(worker.conn, "evt-1", channel="work")
+
+    worker.run_once()  # must not raise
+
+    assert not (tmp_path / "nanobar_type_system.db").exists()
+
+
+def test_process_one_does_not_overwrite_an_already_registered_entry(tmp_path: Path) -> None:
+    dynamic_conn = connect_dynamic_taxonomy(str(tmp_path / "nanobar_type_system.db"))
+    pre_existing = NanobarTypeEntry(
+        expected_scenarios={"success": ExpectedScenario(weight=1.0, required=True, synthesizable=False)}
+    )
+    get_or_create_entry(dynamic_conn, "worker", "work", default_entry=pre_existing, created_by="someone-else")
+
+    worker = _make_worker(
+        tmp_path, channels=("work",), expected_scenarios=_EXPECTED_SCENARIOS, dynamic_taxonomy_conn=dynamic_conn
+    )
+    _insert(worker.conn, "evt-1", channel="work")
+
+    worker.run_once()
+
+    # The worker's own (different) expected_scenarios did not clobber what was already there.
+    assert get_entry(dynamic_conn, "worker", "work") == pre_existing

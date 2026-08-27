@@ -94,7 +94,9 @@ class BookAppointmentService(NanobarService):
     subscriber does that asynchronously. The one real, non-test consumer of `NanobarEventBus`
     in this codebase."""
 
-    def __init__(self, telemetry: NanobarTelemetry, repository: AppointmentRepository, event_bus: NanobarEventBus) -> None:
+    def __init__(
+        self, telemetry: NanobarTelemetry, repository: AppointmentRepository, event_bus: NanobarEventBus
+    ) -> None:
         super().__init__(telemetry)
         self.repository = repository
         self.event_bus = event_bus

@@ -15,7 +15,7 @@ async function loadNotifications() {
     }
     ui.renderNotifications(envelope.result.data, handleMarkRead);
   } catch (err) {
-    ui.showNotificationsError("Could not reach the server.");
+    ui.showNotificationsError("Could not reach the server. Please refresh the page and try again.");
   }
 }
 
@@ -29,7 +29,7 @@ async function loadPosts() {
     }
     ui.renderPosts(envelope.result.data);
   } catch (err) {
-    ui.showPostsError("Could not reach the server.");
+    ui.showPostsError("Could not reach the server. Please refresh the page and try again.");
   }
 }
 

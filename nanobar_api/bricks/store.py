@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Any
 
 from nanobar_api.bricks.schema import (
     REVIEW_STATUSES,
@@ -164,17 +165,109 @@ def set_regression_weight(conn: sqlite3.Connection, nanobar_id: str, regression_
         conn.execute("UPDATE nanobars SET regression_weight = ? WHERE nanobar_id = ?", (regression_weight, nanobar_id))
 
 
+def set_nanobar_domain(conn: sqlite3.Connection, nanobar_id: str, domain: str | None) -> None:
+    """A dedicated setter, same category as `set_regression_weight` above -- unlike
+    `update_nanobar`'s `domain` field (a human-editable value with "re-supply everything"
+    partial-update semantics), this one is for a system-managed correction: backfilling/
+    correcting `domain` on an existing route-keyed nanobar against the current route manifest
+    (see `demo/dashboard/nanobar_refresh.py`), without touching any of the human-edited fields.
+    """
+    with conn:
+        conn.execute("UPDATE nanobars SET domain = ? WHERE nanobar_id = ?", (domain, nanobar_id))
+
+
 def get_nanobar(conn: sqlite3.Connection, nanobar_id: str) -> Nanobar | None:
     row = conn.execute("SELECT * FROM nanobars WHERE nanobar_id = ?", (nanobar_id,)).fetchone()
     return _row_to_nanobar(row) if row is not None else None
 
 
-def list_nanobars(conn: sqlite3.Connection, target_type: str | None = None) -> list[Nanobar]:
-    rows = conn.execute("SELECT * FROM nanobars ORDER BY created_at").fetchall()
-    nanobars = [_row_to_nanobar(row) for row in rows]
-    if target_type is None:
-        return nanobars
-    return [n for n in nanobars if any(ref.target_type == target_type for ref in n.monitor_target_refs)]
+def list_known_route_keys(conn: sqlite3.Connection) -> set[str]:
+    """Every distinct `monitor_target_refs[].stable_name` (route key) any existing nanobar
+    already carries -- used by `demo/dashboard/nanobar_refresh.py` to find which manifest
+    routes have no nanobar yet, without creating a duplicate for one that does."""
+    rows = conn.execute(
+        "SELECT DISTINCT json_extract(value, '$.stable_name') FROM nanobars, json_each(monitor_target_refs_json)"
+    ).fetchall()
+    return {row[0] for row in rows if row[0] is not None}
+
+
+#: Text fields searched by `list_nanobars(q=...)` -- exactly the fields already rendered on the
+#: nanobars list/detail pages, so "search" means "search what you can already see."
+_SEARCHABLE_NANOBAR_COLUMNS = (
+    "label",
+    "scenario_description",
+    "component_source_description",
+    "domain",
+    "nanobar_type",
+    "nanobar_id",
+)
+
+
+#: Sentinel `domain` filter value meaning "nanobars with no domain at all" (`domain IS NULL`)
+#: -- every route-keyed nanobar created before `get_or_create_nanobar_by_route_key` gained a
+#: `domain` parameter, plus anything from a source that never sets one (e.g. a raw
+#: `SnapshotMiddleware` capture). Not a real domain string any route could ever produce (domain
+#: names come from `Mount` path segments, which can't contain parentheses).
+UNMAPPED_DOMAIN = "(unmapped)"
+
+
+def _nanobars_where(
+    target_type: str | None, nanobar_type: str | None, q: str | None, domain: str | None = None
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if target_type is not None:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(monitor_target_refs_json) WHERE json_extract(value, '$.target_type') = ?)"
+        )
+        params.append(target_type)
+    if nanobar_type is not None:
+        clauses.append("nanobar_type = ?")
+        params.append(nanobar_type)
+    if domain is not None:
+        if domain == UNMAPPED_DOMAIN:
+            clauses.append("domain IS NULL")
+        else:
+            clauses.append("domain = ?")
+            params.append(domain)
+    if q:
+        needle = f"%{q.lower()}%"
+        column_clauses = " OR ".join(f"LOWER(COALESCE({column}, '')) LIKE ?" for column in _SEARCHABLE_NANOBAR_COLUMNS)
+        clauses.append(f"({column_clauses})")
+        params.extend([needle] * len(_SEARCHABLE_NANOBAR_COLUMNS))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def list_nanobars(
+    conn: sqlite3.Connection,
+    target_type: str | None = None,
+    *,
+    nanobar_type: str | None = None,
+    domain: str | None = None,
+    q: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> list[Nanobar]:
+    where, params = _nanobars_where(target_type, nanobar_type, q, domain)
+    rows = conn.execute(
+        f"SELECT * FROM nanobars {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (*params, page_size, (page - 1) * page_size),
+    ).fetchall()
+    return [_row_to_nanobar(row) for row in rows]
+
+
+def count_nanobars(
+    conn: sqlite3.Connection,
+    target_type: str | None = None,
+    *,
+    nanobar_type: str | None = None,
+    domain: str | None = None,
+    q: str | None = None,
+) -> int:
+    where, params = _nanobars_where(target_type, nanobar_type, q, domain)
+    row = conn.execute(f"SELECT COUNT(*) FROM nanobars {where}", params).fetchone()
+    return int(row[0])
 
 
 def _row_to_nanobar(row: sqlite3.Row) -> Nanobar:

@@ -15,7 +15,7 @@ async function init() {
     }
     ui.renderPosts(envelope.result.data);
   } catch (err) {
-    ui.showError("Could not reach the server. Please check your connection and try again.");
+    ui.showError("Could not reach the server. Please refresh the page and try again.");
   }
 }
 

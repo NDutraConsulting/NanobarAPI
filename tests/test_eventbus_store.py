@@ -11,14 +11,20 @@ from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.store import (
     ack_event,
     claim_events,
+    component_span_name,
     connect,
+    count_trace_ids,
+    derive_component,
     fail_event,
+    find_latest_span_by_nanobar_type,
     get_events_by_trace_id,
+    get_trace_facets,
     get_unprocessed,
     heartbeat,
     insert_events,
     list_stale_workers,
     list_trace_ids,
+    list_workers,
     mark_processed,
     register_worker,
 )
@@ -259,17 +265,198 @@ def test_list_trace_ids_reports_any_error(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_list_trace_ids_respects_limit(tmp_path: Path) -> None:
+def test_list_trace_ids_respects_page_size(tmp_path: Path) -> None:
     db_path = str(tmp_path / "events.db")
     conn = connect(db_path)
     try:
         insert_events(conn, [_make_event(f"evt-{i}", "trace", trace_id=f"tr-{i}") for i in range(5)])
 
-        summaries = list_trace_ids(conn, "trace", limit=2)
+        summaries = list_trace_ids(conn, "trace", page_size=2)
 
         assert len(summaries) == 2
     finally:
         conn.close()
+
+
+def test_list_trace_ids_second_page_returns_the_next_slice(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        # recorded_at_ns ascending -> default ORDER BY last_recorded_at_ns DESC means tr-4 is
+        # newest (page 1) and tr-0 is oldest (page 2, with page_size=4).
+        insert_events(conn, [_make_event(f"evt-{i}", "trace", trace_id=f"tr-{i}", recorded_at_ns=i) for i in range(5)])
+
+        page_1 = list_trace_ids(conn, "trace", page=1, page_size=4)
+        page_2 = list_trace_ids(conn, "trace", page=2, page_size=4)
+
+        assert [s.trace_id for s in page_1] == ["tr-4", "tr-3", "tr-2", "tr-1"]
+        assert [s.trace_id for s in page_2] == ["tr-0"]
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_filters_by_date_range(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-early", "trace", trace_id="tr-early", recorded_at_ns=100),
+                _make_event("evt-mid", "trace", trace_id="tr-mid", recorded_at_ns=500),
+                _make_event("evt-late", "trace", trace_id="tr-late", recorded_at_ns=900),
+            ],
+        )
+
+        after_only = list_trace_ids(conn, "trace", created_after_ns=400)
+        before_only = list_trace_ids(conn, "trace", created_before_ns=600)
+        between = list_trace_ids(conn, "trace", created_after_ns=400, created_before_ns=600)
+
+        assert {s.trace_id for s in after_only} == {"tr-mid", "tr-late"}
+        assert {s.trace_id for s in before_only} == {"tr-early", "tr-mid"}
+        assert {s.trace_id for s in between} == {"tr-mid"}
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_filters_by_nanobar_type(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-a", "trace", trace_id="tr-a", payload={"nanobar_type": "controller-request-response"}),
+                _make_event("evt-b", "trace", trace_id="tr-b", payload={"nanobar_type": "worker-snapshot"}),
+                _make_event("evt-c", "trace", trace_id="tr-c", payload={}),
+            ],
+        )
+
+        matched = list_trace_ids(conn, "trace", nanobar_types=["controller-request-response"])
+
+        assert [s.trace_id for s in matched] == ["tr-a"]
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_filters_by_component(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event(
+                    "evt-a", "trace", trace_id="tr-a", payload={"name": "controller.POST /admin/app/api/posts"}
+                ),
+                _make_event("evt-b", "trace", trace_id="tr-b", payload={"name": "worker.worker-1.process"}),
+            ],
+        )
+
+        matched = list_trace_ids(conn, "trace", components=["controller:POST /admin/app/api/posts"])
+
+        assert [s.trace_id for s in matched] == ["tr-a"]
+    finally:
+        conn.close()
+
+
+def test_count_trace_ids_matches_list_trace_ids_total_ignoring_page_size(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event(f"evt-{i}", "trace", trace_id=f"tr-{i}") for i in range(5)])
+
+        total = count_trace_ids(conn, "trace")
+        page = list_trace_ids(conn, "trace", page_size=2)
+
+        assert total == 5
+        assert len(page) == 2
+    finally:
+        conn.close()
+
+
+def test_get_trace_facets_returns_distinct_nanobar_types_and_components(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event(
+                    "evt-a",
+                    "trace",
+                    trace_id="tr-a",
+                    payload={"name": "controller.POST /x", "nanobar_type": "controller-request-response"},
+                ),
+                _make_event(
+                    "evt-b",
+                    "trace",
+                    trace_id="tr-a",
+                    payload={"name": "controller.POST /x", "nanobar_type": "controller-request-response"},
+                ),
+                _make_event("evt-c", "trace", trace_id="tr-b", payload={"name": "worker.w1.process"}),
+            ],
+        )
+
+        nanobar_types, components = get_trace_facets(conn, "trace")
+
+        assert nanobar_types == ["controller-request-response"]
+        assert components == ["controller:POST /x", "worker:w1"]
+    finally:
+        conn.close()
+
+
+def test_list_trace_ids_ignores_a_component_filter_with_no_reconstructible_span_name(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-a", "trace", trace_id="tr-a", payload={"name": "controller.POST /x"})])
+
+        matched = list_trace_ids(conn, "trace", components=["not-a-real-kind:whatever"])
+
+        assert [s.trace_id for s in matched] == ["tr-a"]
+    finally:
+        conn.close()
+
+
+def test_component_span_name_returns_none_for_an_unknown_kind() -> None:
+    assert component_span_name("not-a-real-kind", "whatever") is None
+
+
+def test_get_trace_facets_respects_a_date_window(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event("evt-early", "trace", trace_id="tr-early", recorded_at_ns=100, payload={"name": "a"}),
+                _make_event("evt-late", "trace", trace_id="tr-late", recorded_at_ns=900, payload={"name": "b"}),
+            ],
+        )
+
+        after_only = get_trace_facets(conn, "trace", created_after_ns=500)
+        before_only = get_trace_facets(conn, "trace", created_before_ns=500)
+
+        assert after_only[1] == ["other:b"]
+        assert before_only[1] == ["other:a"]
+    finally:
+        conn.close()
+
+
+def test_derive_component_and_component_span_name_round_trip() -> None:
+    cases = [
+        "GET /admin/app/dashboard",
+        "controller.POST /admin/app/api/posts",
+        "validator.POST /admin/app/api/posts",
+        "service",
+        "worker.worker-1.process",
+        "event-callback.domain.appointments",
+        "dashboard.nanobars.list",
+    ]
+    for span_name in cases:
+        kind, name = derive_component(span_name)
+        assert component_span_name(kind, name) == span_name
 
 
 def test_get_events_by_trace_id_orders_by_monotonic_ns(tmp_path: Path) -> None:
@@ -318,6 +505,67 @@ def test_get_events_by_trace_id_unknown_returns_empty(tmp_path: Path) -> None:
     conn = connect(db_path)
     try:
         assert get_events_by_trace_id(conn, "does-not-exist") == []
+    finally:
+        conn.close()
+
+
+def test_find_latest_span_by_nanobar_type_returns_the_most_recent_match(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [
+                _make_event(
+                    "evt-old",
+                    channel="trace",
+                    recorded_at_ns=1_000,
+                    payload={"name": "old", "nanobar_type": "worker-domain.appointments"},
+                ),
+                _make_event(
+                    "evt-new",
+                    channel="trace",
+                    recorded_at_ns=2_000,
+                    payload={"name": "new", "nanobar_type": "worker-domain.appointments"},
+                ),
+                _make_event(
+                    "evt-other-type",
+                    channel="trace",
+                    recorded_at_ns=3_000,
+                    payload={"name": "other", "nanobar_type": "api-response"},
+                ),
+            ],
+        )
+
+        span = find_latest_span_by_nanobar_type(conn, "trace", "worker-domain.appointments")
+
+        assert span is not None
+        assert span.event_id == "evt-new"
+    finally:
+        conn.close()
+
+
+def test_find_latest_span_by_nanobar_type_respects_channel(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(
+            conn,
+            [_make_event("evt-1", channel="other-channel", payload={"nanobar_type": "worker-x"})],
+        )
+
+        assert find_latest_span_by_nanobar_type(conn, "trace", "worker-x") is None
+    finally:
+        conn.close()
+
+
+def test_find_latest_span_by_nanobar_type_returns_none_when_no_match(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        insert_events(conn, [_make_event("evt-1", channel="trace", payload={"nanobar_type": "api-response"})])
+
+        assert find_latest_span_by_nanobar_type(conn, "trace", "worker-unseen") is None
     finally:
         conn.close()
 
@@ -457,6 +705,72 @@ def test_heartbeat_updates_last_heartbeat_at(tmp_path: Path) -> None:
 
         after = conn.execute("SELECT last_heartbeat_at FROM workers WHERE worker_id = ?", ("worker-a",)).fetchone()[0]
         assert after >= before
+    finally:
+        conn.close()
+
+
+def test_register_worker_persists_optional_configuration_fields(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(
+            conn,
+            "worker-a",
+            ["ch1"],
+            mode="cron",
+            schedule="*/5 * * * *",
+            poll_interval_s=2.5,
+            claim_limit=20,
+            lease_seconds=45.0,
+        )
+
+        row = conn.execute(
+            "SELECT mode, schedule, poll_interval_s, claim_limit, lease_seconds FROM workers WHERE worker_id = ?",
+            ("worker-a",),
+        ).fetchone()
+
+        assert tuple(row) == ("cron", "*/5 * * * *", 2.5, 20, 45.0)
+    finally:
+        conn.close()
+
+
+def test_register_worker_configuration_fields_default_to_none(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(conn, "worker-a", ["ch1"])
+
+        row = conn.execute(
+            "SELECT mode, schedule, poll_interval_s, claim_limit, lease_seconds FROM workers WHERE worker_id = ?",
+            ("worker-a",),
+        ).fetchone()
+
+        assert tuple(row) == (None, None, None, None, None)
+    finally:
+        conn.close()
+
+
+def test_list_workers_returns_everything_most_recently_alive_first(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "events.db")
+    conn = connect(db_path)
+    try:
+        register_worker(conn, "worker-a", ["ch1"], mode="listening", poll_interval_s=1.0)
+        register_worker(conn, "worker-b", ["ch2", "ch3"], mode="cron", schedule="0 * * * *")
+        conn.execute(
+            "UPDATE workers SET last_heartbeat_at = datetime('now', '-1 hour') WHERE worker_id = ?", ("worker-a",)
+        )
+        conn.commit()
+
+        workers = list_workers(conn)
+
+        assert [w.worker_id for w in workers] == ["worker-b", "worker-a"]
+        worker_b = workers[0]
+        assert worker_b.channels == ["ch2", "ch3"]
+        assert worker_b.mode == "cron"
+        assert worker_b.schedule == "0 * * * *"
+        worker_a = workers[1]
+        assert worker_a.poll_interval_s == 1.0
+        assert worker_a.schedule is None
     finally:
         conn.close()
 

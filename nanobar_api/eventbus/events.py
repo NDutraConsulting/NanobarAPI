@@ -22,3 +22,23 @@ class TraceSummary:
     first_recorded_at_ns: int
     last_recorded_at_ns: int
     any_error: bool
+
+
+@dataclass(frozen=True)
+class WorkerRecord:
+    """A registered worker's own most-recently-seen liveness + configuration snapshot -- what
+    `store.list_workers()` returns, for "reviewing configurations and monitoring lifecycles"
+    (an app/dashboard consumer, e.g. `demo/dashboard/api.py`'s workers routes). `mode`/
+    `schedule`/`poll_interval_s`/`claim_limit`/`lease_seconds` are `None` for a worker
+    registered before these columns existed (or a caller that never supplied them) -- not
+    every registration is guaranteed to carry full configuration."""
+
+    worker_id: str
+    channels: list[str]
+    started_at: str
+    last_heartbeat_at: str
+    mode: str | None = None
+    schedule: str | None = None
+    poll_interval_s: float | None = None
+    claim_limit: int | None = None
+    lease_seconds: float | None = None

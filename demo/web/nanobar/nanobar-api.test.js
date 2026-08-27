@@ -24,15 +24,15 @@ function stubFetch(responseBody) {
   return calls;
 }
 
-test("fetchNanobars issues a GET to /admin/nanobar/api/nanobars", async () => {
-  const calls = stubFetch({ status: "success", result: { data: [] } });
+test("fetchNanobar issues a GET to the nanobar's own dedicated endpoint", async () => {
+  const calls = stubFetch({ status: "success", result: { data: {} } });
 
-  const envelope = await api.fetchNanobars();
+  const envelope = await api.fetchNanobar("nb-1");
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "/admin/nanobar/api/nanobars");
+  assert.equal(calls[0].url, "/admin/nanobar/api/nanobars/nb-1");
   assert.equal(calls[0].options.method, "GET");
-  assert.deepEqual(envelope, { status: "success", result: { data: [] } });
+  assert.deepEqual(envelope, { status: "success", result: { data: {} } });
 });
 
 test("fetchNanobarBricks URL-encodes the nanobar id into the path", async () => {
@@ -90,4 +90,58 @@ test("every wrapper resolves to the parsed JSON envelope, even an error envelope
   const envelope = await api.fetchNanobarBricks("nb-missing");
 
   assert.deepEqual(envelope, { status: "error", msg: "nanobar not found", result: null });
+});
+
+/* ------------------------------------------------------ merged in from brick-api.js */
+
+test("fetchBrick issues a GET to the brick's own endpoint", async () => {
+  const calls = stubFetch({ status: "success", result: { data: {} } });
+
+  await api.fetchBrick("rbrick-1");
+
+  assert.equal(calls[0].url, "/admin/nanobar/api/bricks/rbrick-1");
+  assert.equal(calls[0].options.method, "GET");
+});
+
+test("setReviewStatus POSTs the status in the body with the CSRF header attached", async () => {
+  document.cookie = "nanobar_csrftoken=tok123";
+  const calls = stubFetch({ status: "success", result: { data: {} } });
+
+  await api.setReviewStatus("rbrick-1", "flagged");
+
+  assert.equal(calls[0].url, "/admin/nanobar/api/bricks/rbrick-1/review-status");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.body, JSON.stringify({ status: "flagged" }));
+  assert.equal(calls[0].options.headers["x-nanobar-csrf-token"], "tok123");
+});
+
+test("addBrickTag and removeBrickTag hit the tags endpoint with the right method", async () => {
+  const addCalls = stubFetch({ status: "success", result: { data: [] } });
+  await api.addBrickTag("rbrick-1", "flaky");
+  assert.equal(addCalls[0].url, "/admin/nanobar/api/bricks/rbrick-1/tags");
+  assert.equal(addCalls[0].options.method, "POST");
+
+  const removeCalls = stubFetch({ status: "success", result: { data: [] } });
+  await api.removeBrickTag("rbrick-1", "flaky");
+  assert.equal(removeCalls[0].url, "/admin/nanobar/api/bricks/rbrick-1/tags/flaky");
+  assert.equal(removeCalls[0].options.method, "DELETE");
+});
+
+test("replayBrick POSTs to the replay endpoint with no body", async () => {
+  const calls = stubFetch({ status: "success", result: { data: { trace_id: "tr-1" } } });
+
+  const envelope = await api.replayBrick("rbrick-1");
+
+  assert.equal(calls[0].url, "/admin/nanobar/api/bricks/rbrick-1/replay");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(envelope.result.data.trace_id, "tr-1");
+});
+
+test("fetchTraceSpans issues a GET to the trace's spans endpoint", async () => {
+  const calls = stubFetch({ status: "success", result: { data: [] } });
+
+  await api.fetchTraceSpans("tr-1");
+
+  assert.equal(calls[0].url, "/admin/nanobar/api/traces/tr-1/spans");
+  assert.equal(calls[0].options.method, "GET");
 });

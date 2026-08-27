@@ -12,12 +12,53 @@
       <a href="/admin/nanobar/dashboard">Nanobars</a>
       <a href="/admin/nanobar/triage">Triage board</a>
       <a href="/admin/nanobar/traces" aria-current="page">Traces</a>
+      <a href="/admin/nanobar/workers">Workers</a>
+      <a href="/admin/nanobar/dashboard/settings">Settings</a>
     </nav>
 
     <header class="page-header">
       <h1 class="page-title">Traces</h1>
       <p class="page-subtitle">Captured request traces, most-recently-completed first.</p>
     </header>
+
+    <details id="filter-panel" class="filter-panel">
+      <summary class="filter-panel-summary">Filters — <span id="filter-summary-text">showing today</span></summary>
+      <div class="filter-panel-body">
+        <div class="filter-row">
+          <label class="filter-field">
+            <span class="filter-field-label">Created after</span>
+            <input type="datetime-local" id="filter-created-after" />
+          </label>
+          <label class="filter-field">
+            <span class="filter-field-label">Created before</span>
+            <input type="datetime-local" id="filter-created-before" />
+          </label>
+          <label class="filter-field">
+            <span class="filter-field-label">Or: last N hours</span>
+            <input type="number" id="filter-since-hours" min="1" step="1" placeholder="e.g. 6" />
+          </label>
+          <label class="filter-checkbox filter-show-all">
+            <input type="checkbox" id="filter-show-all" />
+            Show all (ignore date filters)
+          </label>
+        </div>
+
+        <div class="filter-group">
+          <h3 class="filter-group-title">Nanobar type</h3>
+          <div id="filter-nanobar-types" class="filter-checkbox-list"></div>
+        </div>
+
+        <div class="filter-group">
+          <h3 class="filter-group-title">Component</h3>
+          <div id="filter-components" class="filter-checkbox-list"></div>
+        </div>
+
+        <div class="filter-actions">
+          <button type="button" id="filter-apply-btn" class="filter-apply-btn">Apply filters</button>
+          <button type="button" id="filter-reset-btn" class="filter-reset-btn">Reset to default</button>
+        </div>
+      </div>
+    </details>
 
     <main class="page-main">
       <div id="traces-status" class="traces-status" hidden></div>
@@ -41,8 +82,21 @@
         <p class="empty-state-title">No traces captured yet</p>
         <p class="empty-state-text">Traces will show up here once requests have been recorded.</p>
       </div>
+
+      <nav id="pagination" class="pagination" hidden aria-label="Pagination">
+        <button type="button" id="pagination-prev-btn" class="pagination-btn">&larr; Prev</button>
+        <span id="pagination-summary" class="pagination-summary"></span>
+        <button type="button" id="pagination-next-btn" class="pagination-btn">Next &rarr;</button>
+      </nav>
     </main>
   </div>
+
+  <template id="filter-checkbox-template">
+    <label class="filter-checkbox">
+      <input type="checkbox" class="filter-checkbox-input" />
+      <span class="filter-checkbox-label"></span>
+    </label>
+  </template>
 
   <script type="module" src="/static/traces/traces-controller.js"></script>
 </body>

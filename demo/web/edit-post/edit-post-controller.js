@@ -24,7 +24,7 @@ async function loadPost() {
     }
     ui.renderPost(envelope.result.data);
   } catch (err) {
-    ui.showLoadError("Could not reach the server.");
+    ui.showLoadError("Could not reach the server. Please refresh the page and try again.");
   }
 }
 

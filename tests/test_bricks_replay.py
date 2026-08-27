@@ -190,6 +190,54 @@ def test_replay_non_dict_json_response_falls_back_to_empty_dict(tmp_path: Path) 
     assert replayed["payload"] == {}
 
 
+def test_replay_capture_layer_sourced_brick_derives_method_and_path_from_route_key(tmp_path: Path) -> None:
+    # capture_layer()-sourced shape: request is the validated dataclass's own fields (no
+    # method/path/headers at all), method+path come from source["route_key"] instead.
+    app = Starlette(routes=[Route("/items", _create_item, methods=["POST"])])
+    brick = RegressionBrick(
+        regression_brick_id="rbrick-1",
+        schema_version="1.0",
+        brick_version=1,
+        source={"route_key": "POST /items", "nanobar_type": "controller-request-response"},
+        request={"name": "gizmo"},
+        response={"result": {"data": {"echo": {"name": "gizmo"}}}},
+        content_hash="sha256:x",
+        created_by="test",
+    )
+
+    replayed = replay_brick(app, brick)
+
+    assert replayed["status_code"] == 201
+    assert replayed["payload"]["result"]["data"]["echo"] == {"name": "gizmo"}
+
+
+def test_replay_extra_headers_are_sent_alongside_the_brick_s_own(tmp_path: Path) -> None:
+    async def _echo_header(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "status": "success",
+                "msg": "",
+                "result": {"type": "object", "data": {"x-extra": request.headers.get("x-extra")}},
+            }
+        )
+
+    app = Starlette(routes=[Route("/echo", _echo_header)])
+    brick = RegressionBrick(
+        regression_brick_id="rbrick-2",
+        schema_version="1.0",
+        brick_version=1,
+        source={"route_key": "GET /echo"},
+        request={},
+        response={},
+        content_hash="sha256:y",
+        created_by="test",
+    )
+
+    replayed = replay_brick(app, brick, extra_headers={"x-extra": "hello"})
+
+    assert replayed["payload"]["result"]["data"]["x-extra"] == "hello"
+
+
 def test_replay_get_with_no_body_sends_no_json(tmp_path: Path) -> None:
     # Regression guard: brick.request["payload"] is {} for a bodyless GET, and replay_brick
     # must not send an empty-but-present JSON body in that case (falsy payload => no `json=`

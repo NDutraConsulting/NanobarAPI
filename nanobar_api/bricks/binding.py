@@ -87,6 +87,7 @@ def get_or_create_nanobar_by_route_key(
     system_version: str = "0.0.0",
     target_type: str = _DEFAULT_TARGET_TYPE,
     created_by: str = "auto-registration",
+    domain: str | None = None,
 ) -> tuple[Nanobar, bool]:
     """Idempotent get-or-create keyed by `(nanobar_type, route_key)`. Returns `(nanobar,
     was_created)` — the caller (`bind_new_bricks_to_nanobars` below) needs to know which, to
@@ -103,6 +104,12 @@ def get_or_create_nanobar_by_route_key(
     established convention exactly, not a new guess: `regression_weight=0.5`,
     `endpoint_scenario_frequency={"state": "unmeasured"}`, `request_object_id`/
     `response_object_id` derived as `f"req-{route_key}"`/`f"res-{route_key}"`.
+
+    `domain`, when given, is stamped on a newly-created row only (an existing nanobar's domain
+    is left untouched by this function -- see `nanobar_api.bricks.store.set_nanobar_domain` for
+    correcting one after the fact). This function itself stays manifest-agnostic: callers that
+    know a route's owning domain (e.g. from `nanobar_api.route_manifest`) pass it straight
+    through; callers that don't just leave it `None`, same as before this parameter existed.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -125,6 +132,7 @@ def get_or_create_nanobar_by_route_key(
             endpoint_scenario_frequency={"state": "unmeasured"},
             created_by=created_by,
             monitor_target_refs=[MonitorTargetRef(target_type=target_type, stable_name=route_key)],
+            domain=domain,
         )
         insert_nanobar(conn, nanobar)
         conn.commit()
@@ -164,6 +172,7 @@ def bind_new_bricks_to_nanobars(
     system_version: str = "0.0.0",
     matched_by: str = "auto-registration",
     taxonomy: NanobarTypeTaxonomy | None = None,
+    route_key_domains: dict[str, str] | None = None,
 ) -> BindingResult:
     """Bind each of `bricks` (typically `generate_bricks()`'s return value) to a `Nanobar` row,
     creating one if this is the first brick ever seen for its `(nanobar_type, route_key)` pair.
@@ -173,6 +182,12 @@ def bind_new_bricks_to_nanobars(
     `taxonomy`, when given, recomputes and persists `regression_weight` for every nanobar touched
     by this call (once each, using its full current set of bound bricks — not just this batch's).
     `None` (the default) skips weight recomputation entirely, unchanged from before this existed.
+
+    `route_key_domains`, when given, maps a brick's `route_key` to the domain a newly-created
+    nanobar for it should be stamped with (typically built from `nanobar_api.route_manifest.
+    load_route_manifest()` by the caller) -- a route with no entry in this mapping (or when the
+    mapping itself is omitted) just creates the nanobar with `domain=None`, unchanged from before
+    this parameter existed.
     """
     nanobars_created = 0
     bindings_created = 0
@@ -197,6 +212,7 @@ def bind_new_bricks_to_nanobars(
                 system_name=system_name,
                 system_version=system_version,
                 created_by=matched_by,
+                domain=route_key_domains.get(route_key) if route_key_domains else None,
             )
             nanobars_created += int(was_created)
             resolved[key] = nanobar

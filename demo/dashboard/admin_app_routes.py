@@ -107,9 +107,7 @@ def build_mount(*, backend: SessionBackend) -> Mount:
             Route(
                 "/api/notifications/{notification_id}/read",
                 adapt_handler(
-                    _gate_endpoint(
-                        MarkNotificationReadGate, "POST /admin/app/api/notifications/{notification_id}/read"
-                    )
+                    _gate_endpoint(MarkNotificationReadGate, "POST /admin/app/api/notifications/{notification_id}/read")
                 ),
                 methods=["POST"],
             ),

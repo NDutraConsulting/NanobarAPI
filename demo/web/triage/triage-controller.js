@@ -49,7 +49,7 @@ async function onCardMove(brickId, fromStatus, toStatus) {
     ui.moveCardToColumn(brickId, fromStatus, toStatus);
   } catch (err) {
     ui.setCardPending(brickId, fromStatus, false);
-    ui.showCardError(brickId, fromStatus, "Could not reach the server. Please try again.");
+    ui.showCardError(brickId, fromStatus, "Could not reach the server. Please refresh the page and try again.");
   }
 }
 
@@ -115,7 +115,7 @@ async function init() {
   try {
     await loadBoard();
   } catch (err) {
-    ui.showLoadError("Could not reach the server. Please try again.");
+    ui.showLoadError("Could not reach the server. Please refresh the page and try again.");
   }
 }
 

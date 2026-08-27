@@ -1,5 +1,6 @@
 import re
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import pytest
 from opentelemetry import trace as otel_trace
@@ -17,6 +18,7 @@ from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepos
 from nanobar_api.middleware.trace import (
     TRACING_ENABLED_ENV_VAR,
     EventBusTraceMiddleware,
+    SQLiteTraceCaptureToggle,
     configure_tracing,
     current_span_id,
     current_trace_id,
@@ -51,13 +53,15 @@ def _repository(*channels: str) -> EventQueueRepository:
     return EventQueueRepository([ChannelConfig(name=c) for c in channels or ("trace",)])
 
 
-def _build_app(repository: EventQueueRepository, channel: str = "trace") -> Starlette:
+def _build_app(
+    repository: EventQueueRepository, channel: str = "trace", *, is_enabled: Callable[[], bool] | None = None
+) -> Starlette:
     return Starlette(
         routes=[
             Route("/items/{item_id}", _ping),
             Route("/boom", _boom),
         ],
-        middleware=[Middleware(EventBusTraceMiddleware, repository=repository, channel=channel)],
+        middleware=[Middleware(EventBusTraceMiddleware, repository=repository, channel=channel, is_enabled=is_enabled)],
     )
 
 
@@ -222,6 +226,54 @@ def test_no_tracer_configured_skips_instrumentation(monkeypatch: pytest.MonkeyPa
     response = client.get("/items/1")
 
     assert response.status_code == 200
+    assert repository.get_any(["trace"], timeout=0.2) is None
+
+
+# ---------------------------------------------------------------------------- is_enabled ---
+
+
+def test_is_enabled_false_skips_instrumentation_even_with_a_real_provider() -> None:
+    repository = _repository()
+    client = TestClient(_build_app(repository, is_enabled=lambda: False))
+
+    response = client.get("/items/1")
+
+    assert response.status_code == 200
+    assert repository.get_any(["trace"], timeout=0.2) is None
+
+
+def test_is_enabled_true_still_captures() -> None:
+    repository = _repository()
+    client = TestClient(_build_app(repository, is_enabled=lambda: True))
+
+    response = client.get("/items/1")
+
+    assert response.status_code == 200
+    assert repository.get_any(["trace"], timeout=1.0) is not None
+
+
+def test_is_enabled_none_default_still_captures() -> None:
+    # No callable passed -- the pre-existing behavior (gated only by whether a real tracer
+    # provider is configured) must be unaffected by adding this optional hook.
+    repository = _repository()
+    client = TestClient(_build_app(repository, is_enabled=None))
+
+    response = client.get("/items/1")
+
+    assert response.status_code == 200
+    assert repository.get_any(["trace"], timeout=1.0) is not None
+
+
+def test_is_enabled_checked_fresh_per_request() -> None:
+    repository = _repository()
+    state = {"enabled": True}
+    client = TestClient(_build_app(repository, is_enabled=lambda: state["enabled"]))
+
+    client.get("/items/1")
+    assert repository.get_any(["trace"], timeout=1.0) is not None
+
+    state["enabled"] = False
+    client.get("/items/2")
     assert repository.get_any(["trace"], timeout=0.2) is None
 
 
@@ -458,3 +510,44 @@ async def test_server_with_no_port_omits_server_port() -> None:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+# ------------------------------------------------------------ SQLiteTraceCaptureToggle ---
+
+
+def test_toggle_defaults_to_the_given_default_enabled_on_first_use(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "toggle.db")
+
+    toggle = SQLiteTraceCaptureToggle(db_path, default_enabled=True)
+
+    assert toggle.is_enabled() is True
+
+
+def test_toggle_default_enabled_false(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "toggle.db")
+
+    toggle = SQLiteTraceCaptureToggle(db_path, default_enabled=False)
+
+    assert toggle.is_enabled() is False
+
+
+def test_toggle_set_enabled_flips_the_stored_value(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "toggle.db")
+    toggle = SQLiteTraceCaptureToggle(db_path, default_enabled=True)
+
+    toggle.set_enabled(False)
+    assert toggle.is_enabled() is False
+
+    toggle.set_enabled(True)
+    assert toggle.is_enabled() is True
+
+
+def test_toggle_persists_across_a_new_instance_against_the_same_file(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "toggle.db")
+    SQLiteTraceCaptureToggle(db_path, default_enabled=True).set_enabled(False)
+
+    # A second construction (e.g. a process restart) against the same file must respect the
+    # already-stored value, not reset it back to whatever default_enabled it's given this time.
+    reopened = SQLiteTraceCaptureToggle(db_path, default_enabled=True)
+
+    assert reopened.is_enabled() is False

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from typing import Any
 
-from nanobar_api.eventbus.events import Event, TraceSummary
+from nanobar_api.eventbus.events import Event, TraceSummary, WorkerRecord
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -29,7 +30,12 @@ CREATE TABLE IF NOT EXISTS workers (
     worker_id TEXT PRIMARY KEY,
     channels TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    last_heartbeat_at TEXT NOT NULL
+    last_heartbeat_at TEXT NOT NULL,
+    mode TEXT,
+    schedule TEXT,
+    poll_interval_s REAL,
+    claim_limit INTEGER,
+    lease_seconds REAL
 );
 
 CREATE TABLE IF NOT EXISTS worker_log (
@@ -126,9 +132,132 @@ def mark_processed(conn: sqlite3.Connection, event_ids: Sequence[str]) -> None:
         )
 
 
-def list_trace_ids(conn: sqlite3.Connection, channel: str, limit: int = 100) -> list[TraceSummary]:
+#: Inverse pair: `derive_component()` reads a captured span's `payload["name"]` and classifies
+#: it into a `(kind, name)` component tag; `component_span_name()` reconstructs the exact span
+#: name a given `(kind, name)` pair would have produced, so the `components` filter below can
+#: match with a plain SQL `IN (...)` against `payload_json`'s `$.name` rather than replicating
+#: this classification logic in SQL. Every `kind` here corresponds to a real, already-existing
+#: `telemetry.span(...)`/`.trace(...)` call site (see the dashboard-search-and-replay plan doc's
+#: "What exists today" section for the full inventory) -- this doesn't invent new span shapes.
+_WORKER_PREFIX = "worker."
+_WORKER_SUFFIX = ".process"
+_CONTROLLER_PREFIX = "controller."
+_VALIDATOR_PREFIX = "validator."
+_EVENT_CALLBACK_PREFIX = "event-callback."
+
+
+def derive_component(span_name: str) -> tuple[str, str]:
+    """Classify a captured span's `payload["name"]` into a `(kind, name)` component tag.
+
+    `"other"` is a real, intentional catch-all (e.g. `demo/dashboard/api.py`'s ad hoc
+    `"dashboard.nanobars.list"` span) -- not every span belongs to one of the framework's
+    named layers, and guessing at a made-up kind for those would be worse than being honest
+    that this is just "some other span," carrying its own name through unchanged.
+    """
+    if span_name == "service":
+        return ("service", "service")
+    if span_name.startswith(_CONTROLLER_PREFIX):
+        return ("controller", span_name[len(_CONTROLLER_PREFIX) :])
+    if span_name.startswith(_VALIDATOR_PREFIX):
+        return ("validator", span_name[len(_VALIDATOR_PREFIX) :])
+    if span_name.startswith(_WORKER_PREFIX) and span_name.endswith(_WORKER_SUFFIX):
+        return ("worker", span_name[len(_WORKER_PREFIX) : -len(_WORKER_SUFFIX)])
+    if span_name.startswith(_EVENT_CALLBACK_PREFIX):
+        return ("event", span_name[len(_EVENT_CALLBACK_PREFIX) :])
+    # EventBusTraceMiddleware's own top-level HTTP span: "{METHOD} {route}" -- a space, and no
+    # "."-joined prefix before that space (rules this out from any of the dotted kinds above).
+    if " " in span_name and "." not in span_name.split(" ", 1)[0]:
+        return ("api", span_name)
+    return ("other", span_name)
+
+
+def component_span_name(kind: str, name: str) -> str | None:
+    """Inverse of `derive_component()`. Returns `None` for a `kind` with no reconstructible
+    exact span name (there is none today -- every real kind round-trips -- but callers building
+    a filter from unvalidated user input should still handle this rather than assume)."""
+    if kind == "api" or kind == "other":
+        return name
+    if kind == "controller":
+        return f"{_CONTROLLER_PREFIX}{name}"
+    if kind == "validator":
+        return f"{_VALIDATOR_PREFIX}{name}"
+    if kind == "worker":
+        return f"{_WORKER_PREFIX}{name}{_WORKER_SUFFIX}"
+    if kind == "event":
+        return f"{_EVENT_CALLBACK_PREFIX}{name}"
+    if kind == "service":
+        return "service"
+    return None
+
+
+def _split_component(value: str) -> tuple[str, str]:
+    kind, _, name = value.partition(":")
+    return kind, name
+
+
+def _trace_where(
+    channel: str,
+    created_after_ns: int | None,
+    created_before_ns: int | None,
+    nanobar_types: Sequence[str] | None,
+    components: Sequence[str] | None,
+) -> tuple[str, list[Any]]:
+    date_clauses: list[str] = []
+    date_params: list[Any] = []
+    if created_after_ns is not None:
+        date_clauses.append("recorded_at_ns >= ?")
+        date_params.append(created_after_ns)
+    if created_before_ns is not None:
+        date_clauses.append("recorded_at_ns <= ?")
+        date_params.append(created_before_ns)
+    date_sql = "".join(f" AND {clause}" for clause in date_clauses)
+
+    clauses = ["channel = ?", "trace_id IS NOT NULL", *date_clauses]
+    params: list[Any] = [channel, *date_params]
+
+    if nanobar_types:
+        placeholders = ",".join("?" for _ in nanobar_types)
+        clauses.append(
+            f"trace_id IN (SELECT trace_id FROM events WHERE channel = ?{date_sql} "
+            f"AND json_extract(payload_json, '$.nanobar_type') IN ({placeholders}))"
+        )
+        params.append(channel)
+        params.extend(date_params)
+        params.extend(nanobar_types)
+
+    if components:
+        span_names = [
+            span_name
+            for span_name in (component_span_name(*_split_component(value)) for value in components)
+            if span_name is not None
+        ]
+        if span_names:
+            placeholders = ",".join("?" for _ in span_names)
+            clauses.append(
+                f"trace_id IN (SELECT trace_id FROM events WHERE channel = ?{date_sql} "
+                f"AND json_extract(payload_json, '$.name') IN ({placeholders}))"
+            )
+            params.append(channel)
+            params.extend(date_params)
+            params.extend(span_names)
+
+    return "WHERE " + " AND ".join(clauses), params
+
+
+def list_trace_ids(
+    conn: sqlite3.Connection,
+    channel: str,
+    *,
+    page: int = 1,
+    page_size: int = 100,
+    created_after_ns: int | None = None,
+    created_before_ns: int | None = None,
+    nanobar_types: Sequence[str] | None = None,
+    components: Sequence[str] | None = None,
+) -> list[TraceSummary]:
+    where, params = _trace_where(channel, created_after_ns, created_before_ns, nanobar_types, components)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             trace_id,
             COUNT(*) AS span_count,
@@ -136,12 +265,12 @@ def list_trace_ids(conn: sqlite3.Connection, channel: str, limit: int = 100) -> 
             MAX(recorded_at_ns) AS last_recorded_at_ns,
             MAX(CASE WHEN json_extract(payload_json, '$.error') THEN 1 ELSE 0 END) AS any_error
         FROM events
-        WHERE channel = ? AND trace_id IS NOT NULL
+        {where}
         GROUP BY trace_id
         ORDER BY last_recorded_at_ns DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
-        (channel, limit),
+        (*params, page_size, (page - 1) * page_size),
     ).fetchall()
     return [
         TraceSummary(
@@ -153,6 +282,55 @@ def list_trace_ids(conn: sqlite3.Connection, channel: str, limit: int = 100) -> 
         )
         for row in rows
     ]
+
+
+def count_trace_ids(
+    conn: sqlite3.Connection,
+    channel: str,
+    *,
+    created_after_ns: int | None = None,
+    created_before_ns: int | None = None,
+    nanobar_types: Sequence[str] | None = None,
+    components: Sequence[str] | None = None,
+) -> int:
+    where, params = _trace_where(channel, created_after_ns, created_before_ns, nanobar_types, components)
+    row = conn.execute(f"SELECT COUNT(DISTINCT trace_id) FROM events {where}", params).fetchone()
+    return int(row[0])
+
+
+def get_trace_facets(
+    conn: sqlite3.Connection,
+    channel: str,
+    *,
+    created_after_ns: int | None = None,
+    created_before_ns: int | None = None,
+) -> tuple[list[str], list[str]]:
+    """Distinct `nanobar_type` values and distinct `"kind:name"` component tags actually present
+    for `channel` (optionally bounded by the same date window the caller's list query uses) --
+    real data for the traces list's filter-panel checkboxes, not a hardcoded guess."""
+    clauses = ["channel = ?"]
+    params: list[Any] = [channel]
+    if created_after_ns is not None:
+        clauses.append("recorded_at_ns >= ?")
+        params.append(created_after_ns)
+    if created_before_ns is not None:
+        clauses.append("recorded_at_ns <= ?")
+        params.append(created_before_ns)
+    where = "WHERE " + " AND ".join(clauses)
+
+    type_expr = "json_extract(payload_json, '$.nanobar_type')"
+    type_rows = conn.execute(
+        f"SELECT DISTINCT {type_expr} FROM events {where} AND {type_expr} IS NOT NULL", params
+    ).fetchall()
+    nanobar_types = sorted(row[0] for row in type_rows)
+
+    name_expr = "json_extract(payload_json, '$.name')"
+    name_rows = conn.execute(
+        f"SELECT DISTINCT {name_expr} FROM events {where} AND {name_expr} IS NOT NULL", params
+    ).fetchall()
+    components = sorted({f"{kind}:{name}" for kind, name in (derive_component(row[0]) for row in name_rows)})
+
+    return nanobar_types, components
 
 
 def claim_events(
@@ -235,20 +413,43 @@ def fail_event(conn: sqlite3.Connection, event_id: str, error: str) -> None:
         )
 
 
-def register_worker(conn: sqlite3.Connection, worker_id: str, channels: Sequence[str]) -> None:
-    """Upsert a worker's liveness row — registers it if new, refreshes its channel list and
-    heartbeat if it already exists (a worker restarting under the same id re-registers cleanly).
+def register_worker(
+    conn: sqlite3.Connection,
+    worker_id: str,
+    channels: Sequence[str],
+    *,
+    mode: str | None = None,
+    schedule: str | None = None,
+    poll_interval_s: float | None = None,
+    claim_limit: int | None = None,
+    lease_seconds: float | None = None,
+) -> None:
+    """Upsert a worker's liveness + configuration row — registers it if new, refreshes its
+    channel list/config/heartbeat if it already exists (a worker restarting under the same id
+    re-registers cleanly). `mode`/`schedule`/`poll_interval_s`/`claim_limit`/`lease_seconds` are
+    a snapshot of `WorkerConfig`/constructor values at the moment of this call (see
+    `nanobar_api.workers.NanobarWorker.run_once()`, the only real call site) -- all optional so
+    a caller with nothing more than `worker_id`/`channels` still registers cleanly, same as
+    before these fields existed.
     """
     with conn:
         conn.execute(
             """
-            INSERT INTO workers (worker_id, channels, started_at, last_heartbeat_at)
-            VALUES (?, ?, datetime('now'), datetime('now'))
+            INSERT INTO workers (
+                worker_id, channels, started_at, last_heartbeat_at,
+                mode, schedule, poll_interval_s, claim_limit, lease_seconds
+            )
+            VALUES (?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?)
             ON CONFLICT(worker_id) DO UPDATE SET
                 channels = excluded.channels,
-                last_heartbeat_at = excluded.last_heartbeat_at
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                mode = excluded.mode,
+                schedule = excluded.schedule,
+                poll_interval_s = excluded.poll_interval_s,
+                claim_limit = excluded.claim_limit,
+                lease_seconds = excluded.lease_seconds
             """,
-            (worker_id, json.dumps(list(channels))),
+            (worker_id, json.dumps(list(channels)), mode, schedule, poll_interval_s, claim_limit, lease_seconds),
         )
 
 
@@ -272,6 +473,35 @@ def list_stale_workers(conn: sqlite3.Connection, staleness_seconds: float) -> li
         (f"-{staleness_seconds} seconds",),
     ).fetchall()
     return [row[0] for row in rows]
+
+
+def list_workers(conn: sqlite3.Connection) -> list[WorkerRecord]:
+    """Every registered worker, most-recently-alive first -- "reviewing configurations and
+    monitoring lifecycles" (an app/dashboard consumer, e.g. `demo/dashboard/api.py`'s workers
+    routes), a plain listing rather than `list_stale_workers()`'s narrower filtered-to-stale
+    view. Whether a given row is stale is left for the caller to decide (it knows its own
+    staleness threshold; this function doesn't invent one)."""
+    rows = conn.execute(
+        """
+        SELECT worker_id, channels, started_at, last_heartbeat_at, mode, schedule,
+               poll_interval_s, claim_limit, lease_seconds
+        FROM workers ORDER BY last_heartbeat_at DESC
+        """
+    ).fetchall()
+    return [
+        WorkerRecord(
+            worker_id=row[0],
+            channels=json.loads(row[1]),
+            started_at=row[2],
+            last_heartbeat_at=row[3],
+            mode=row[4],
+            schedule=row[5],
+            poll_interval_s=row[6],
+            claim_limit=row[7],
+            lease_seconds=row[8],
+        )
+        for row in rows
+    ]
 
 
 def insert_worker_log(
@@ -329,3 +559,32 @@ def get_events_by_trace_id(conn: sqlite3.Connection, trace_id: str, channel: str
         )
         for row in rows
     ]
+
+
+def find_latest_span_by_nanobar_type(conn: sqlite3.Connection, channel: str, nanobar_type: str) -> Event | None:
+    """The most recently recorded span tagged `nanobar_type` on `channel` (typically `"trace"`),
+    or `None` if none exists yet. Evidence for a `nanobar_type` a caller can't otherwise
+    classify (see `demo/dashboard/api.py`'s `nanobar_coverage_gaps` -- a genuinely unresolvable
+    type resolves to a `"needs_classification"` status pointing here, a real captured span, not
+    just a name with nothing to investigate)."""
+    row = conn.execute(
+        """
+        SELECT event_id, channel, trace_id, span_id, recorded_at_ns, monotonic_ns, payload_json
+        FROM events
+        WHERE channel = ? AND json_extract(payload_json, '$.nanobar_type') = ?
+        ORDER BY recorded_at_ns DESC
+        LIMIT 1
+        """,
+        (channel, nanobar_type),
+    ).fetchone()
+    if row is None:
+        return None
+    return Event(
+        event_id=row[0],
+        channel=row[1],
+        trace_id=row[2],
+        span_id=row[3],
+        recorded_at_ns=row[4],
+        monotonic_ns=row[5],
+        payload=json.loads(row[6]),
+    )

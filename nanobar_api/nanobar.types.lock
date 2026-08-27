@@ -49,6 +49,12 @@
       "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
     }
   },
+  "worker": {
+    "expected_scenarios": {
+      "success": {"weight": 1.0, "required": true, "synthesizable": false},
+      "server_error": {"weight": 0.3, "required": true, "synthesizable": false}
+    }
+  },
   "api-to-db": {
     "expected_scenarios": {
       "success": {"weight": 1.0, "required": true, "synthesizable": false},

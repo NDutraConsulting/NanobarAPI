@@ -143,7 +143,9 @@ class NanobarEventBus:
 
         for callback in self._subscribers.get(event.channel, []):
             try:
-                with self._telemetry.span("event-callback", nanobar=NanobarProps(type="event-to-subscriber")):
+                with self._telemetry.span(
+                    f"event-callback.{event.channel}", nanobar=NanobarProps(type="event-to-subscriber")
+                ):
                     result = callback.handle(event)
             except Exception as exc:
                 callback.on_failure(event, exc)

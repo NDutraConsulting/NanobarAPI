@@ -1,0 +1,248 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f4f5f7;
+  color: #1f2328;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.85rem 1.5rem;
+  background: #ffffff;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.top-nav a {
+  color: #6b7280;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.top-nav a:hover,
+.top-nav a[aria-current="page"] {
+  color: #4f46e5;
+}
+
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 3rem;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.page-subtitle {
+  margin: 0.35rem 0 0;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.page-main {
+  margin-top: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.settings-status {
+  color: #6b7280;
+  font-size: 1rem;
+  padding: 1rem 0;
+}
+
+.settings-status-error {
+  color: #b91c1c;
+  font-weight: 600;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.settings-section {
+  background: #ffffff;
+  border: 1px solid #e1e4e8;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  padding: 1.25rem 1.5rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.settings-row-text {
+  min-width: 0;
+}
+
+.settings-row-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.settings-row-description {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.settings-row-description code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f4f5f7;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
+.settings-row-description a {
+  color: #4f46e5;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.settings-row-description a:hover {
+  text-decoration: underline;
+}
+
+.settings-error {
+  margin: 0.9rem 0 0;
+  color: #b91c1c;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.settings-section-heading {
+  margin: 0 0 1rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.refresh-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1rem 0;
+  border-top: 1px solid #e1e4e8;
+}
+
+.refresh-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.refresh-last-run {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: #9ca3af;
+}
+
+.refresh-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #4f46e5;
+  background: #4f46e5;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: #4338ca;
+}
+
+.refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.refresh-status {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.refresh-status-error {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+/* Toggle switch -- a plain checkbox visually restyled, so it stays keyboard/screen-reader
+   accessible (Tab + Space toggles it) without any extra ARIA wiring. */
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.toggle-track {
+  display: block;
+  width: 2.75rem;
+  height: 1.5rem;
+  background: #d1d5db;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
+.toggle-switch input:checked + .toggle-track {
+  background: #4f46e5;
+}
+
+.toggle-switch input:focus-visible + .toggle-track {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+.toggle-switch input:disabled + .toggle-track {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-thumb {
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.175rem;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.toggle-switch input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(1.25rem);
+}

@@ -10,7 +10,7 @@ flagged gap, not an oversight:
   Any one missing required field is enough to trigger the validator layer, so the simplest, most
   robust synthesis works generically without guessing which field or what a "wrong" value would
   even look like for an unknown type. **Naming note, found via live verification, not assumed:**
-  the vendored taxonomy (`nanobar_type.json`) lists `invalid_input` (400) and `validation_error`
+  the vendored taxonomy (`nanobar.types.lock`) lists `invalid_input` (400) and `validation_error`
   (422) as *separate* scenario types (`bricks/generate.py`'s `_classify_scenario_type` maps them
   to those exact status codes) — but `NanobarValidatorGate.__call__`'s own `ValidationError`
   handling always returns 400, never 422. Against an app built on *this* framework's own

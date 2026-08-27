@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workers · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/workers/workers.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/admin/nanobar/dashboard">Nanobars</a>
+      <a href="/admin/nanobar/triage">Triage board</a>
+      <a href="/admin/nanobar/traces">Traces</a>
+      <a href="/admin/nanobar/workers" aria-current="page">Workers</a>
+      <a href="/admin/nanobar/dashboard/settings">Settings</a>
+    </nav>
+
+    <header class="page-header">
+      <h1 class="page-title">Workers</h1>
+      <p class="page-subtitle">
+        Every registered worker's own configuration and liveness, generated from its own code
+        (<code>WorkerConfig</code> + <code>register_worker()</code>) &mdash; nothing here is hand-maintained.
+      </p>
+    </header>
+
+    <main class="page-main">
+      <div id="workers-status" class="workers-status" hidden></div>
+
+      <div id="workers-layout" class="workers-layout" hidden>
+        <div class="workers-pane">
+          <ul id="workers-list" class="workers-list"></ul>
+        </div>
+
+        <div class="worker-detail-pane">
+          <div id="worker-detail-empty" class="worker-detail-empty">
+            <p>Select a worker on the left to see its configuration and recent failure log.</p>
+          </div>
+
+          <div id="worker-detail" class="worker-detail" hidden>
+            <div class="worker-detail-top">
+              <h2 id="worker-detail-heading" class="worker-detail-heading"></h2>
+              <span id="worker-status-pill" class="worker-status-pill"></span>
+            </div>
+
+            <dl id="worker-config-grid" class="worker-config-grid"></dl>
+
+            <section class="worker-log-section" aria-labelledby="worker-log-heading">
+              <h3 id="worker-log-heading" class="section-heading">Recent failures</h3>
+              <div id="worker-log-status" class="worker-log-status" hidden></div>
+              <ul id="worker-log-list" class="worker-log-list" hidden></ul>
+              <div id="worker-log-empty" class="empty-state" hidden>
+                <p class="empty-state-title">No failures logged for this worker</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div id="workers-empty" class="empty-state" hidden>
+        <p class="empty-state-title">No workers registered yet</p>
+        <p class="empty-state-text">A worker shows up here the first time it calls <code>run_once()</code>.</p>
+      </div>
+    </main>
+  </div>
+
+  <template id="worker-row-template">
+    <li class="worker-row">
+      <button type="button" class="worker-row-btn">
+        <span class="worker-status-dot"></span>
+        <span class="worker-id"></span>
+        <span class="worker-channels"></span>
+      </button>
+    </li>
+  </template>
+
+  <template id="worker-config-field-template">
+    <div class="worker-config-field">
+      <span class="worker-config-field-label"></span>
+      <span class="worker-config-field-value"></span>
+    </div>
+  </template>
+
+  <template id="worker-log-row-template">
+    <li class="worker-log-row">
+      <span class="worker-log-time"></span>
+      <span class="worker-log-event-id"></span>
+      <span class="worker-log-error"></span>
+    </li>
+  </template>
+
+  <script type="module" src="/static/workers/workers-controller.js"></script>
+</body>
+</html>

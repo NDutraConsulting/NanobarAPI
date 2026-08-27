@@ -69,6 +69,31 @@ def test_get_or_create_creates_then_reuses(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_get_or_create_stamps_domain_on_a_new_row(tmp_path: Path) -> None:
+    conn = connect(str(tmp_path / "regression_bricks.db"))
+    try:
+        nanobar, created = get_or_create_nanobar_by_route_key(
+            conn, nanobar_type="validator-request-response", route_key="GET /health", domain="admin/nanobar"
+        )
+
+        assert created is True
+        assert nanobar.domain == "admin/nanobar"
+    finally:
+        conn.close()
+
+
+def test_get_or_create_domain_defaults_to_none(tmp_path: Path) -> None:
+    conn = connect(str(tmp_path / "regression_bricks.db"))
+    try:
+        nanobar, _ = get_or_create_nanobar_by_route_key(
+            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        )
+
+        assert nanobar.domain is None
+    finally:
+        conn.close()
+
+
 def test_get_or_create_distinguishes_by_nanobar_type(tmp_path: Path) -> None:
     conn = connect(str(tmp_path / "regression_bricks.db"))
     try:
@@ -161,6 +186,34 @@ def test_bind_new_bricks_creates_nanobars_and_bindings(tmp_path: Path) -> None:
             bound_nanobars = get_nanobars_for_brick(conn, brick.regression_brick_id)
             assert len(bound_nanobars) == 1
             assert bound_nanobars[0].nanobar_type == brick.source["nanobar_type"]
+    finally:
+        conn.close()
+
+
+def test_bind_new_bricks_stamps_domain_from_route_key_domains(tmp_path: Path) -> None:
+    conn = connect(str(tmp_path / "regression_bricks.db"))
+    try:
+        brick = _make_brick("rbrick-1", "sha256:one", route_key="GET /admin/nanobar/dashboard")
+        insert_brick(conn, brick)
+
+        bind_new_bricks_to_nanobars(conn, [brick], route_key_domains={"GET /admin/nanobar/dashboard": "admin/nanobar"})
+
+        nanobars = list_nanobars(conn)
+        assert nanobars[0].domain == "admin/nanobar"
+    finally:
+        conn.close()
+
+
+def test_bind_new_bricks_domain_is_none_for_a_route_key_missing_from_the_mapping(tmp_path: Path) -> None:
+    conn = connect(str(tmp_path / "regression_bricks.db"))
+    try:
+        brick = _make_brick("rbrick-1", "sha256:one", route_key="GET /unmapped")
+        insert_brick(conn, brick)
+
+        bind_new_bricks_to_nanobars(conn, [brick], route_key_domains={"GET /other": "admin/app"})
+
+        nanobars = list_nanobars(conn)
+        assert nanobars[0].domain is None
     finally:
         conn.close()
 

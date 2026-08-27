@@ -121,80 +121,266 @@ test("renderSummary treats a value containing markup as inert text, not injected
 
 /* -------------------------------------------------------- coverage gaps */
 
-test("renderCoverageGaps shows the empty state for an empty list", () => {
-  ui.renderCoverageGaps([]);
+test("renderCoverageGaps shows the empty state for a classified nanobar with no gaps", () => {
+  ui.renderCoverageGaps({ status: "classified", gaps: [] });
 
   assert.equal(byId("coverage-gaps-empty").hidden, false);
   assert.equal(byId("coverage-gaps-list").hidden, true);
+  assert.equal(byId("coverage-needs-classification").hidden, true);
 });
 
 test("renderCoverageGaps renders one pill per required scenario type", () => {
-  ui.renderCoverageGaps(["unauthorized", "server_error"]);
+  ui.renderCoverageGaps({ status: "classified", gaps: ["unauthorized", "server_error"] });
 
   const list = byId("coverage-gaps-list");
   assert.equal(list.hidden, false);
   assert.equal(byId("coverage-gaps-empty").hidden, true);
+  assert.equal(byId("coverage-needs-classification").hidden, true);
   const pills = [...list.querySelectorAll(".gap-pill")].map((el) => el.textContent);
   assert.deepEqual(pills, ["unauthorized", "server_error"]);
 });
 
-/* ---------------------------------------------------------------- bricks */
+test("renderCoverageGaps shows the needs-classification block with a span link when a related span was found", () => {
+  ui.renderCoverageGaps({
+    status: "needs_classification",
+    nanobar_type: "totally-unrecognized-type",
+    gaps: [],
+    related_span: { trace_id: "tr-1", event_id: "evt-1", name: "GET /checkout", recorded_at_ns: 1 },
+  });
 
-test("renderBricks shows the empty state for zero bricks", () => {
-  ui.renderBricks([]);
-
-  assert.equal(byId("bricks-empty").hidden, false);
-  assert.equal(byId("bricks-table-wrap").hidden, true);
+  assert.equal(byId("coverage-needs-classification").hidden, false);
+  assert.equal(byId("coverage-gaps-list").hidden, true);
+  assert.equal(byId("coverage-gaps-empty").hidden, true);
+  assert.equal(byId("needs-classification-type").textContent, "totally-unrecognized-type");
+  assert.equal(byId("needs-classification-span").hidden, false);
+  assert.equal(byId("needs-classification-no-span").hidden, true);
+  const link = byId("needs-classification-span-link");
+  assert.equal(link.textContent, "GET /checkout");
+  assert.equal(link.getAttribute("href"), "/admin/nanobar/traces/tr-1#span-evt-1");
 });
 
-test("renderBricks builds one row per brick with the expected cell contents", () => {
-  ui.renderBricks([
-    {
-      regression_brick_id: "rbrick-1",
-      request: { method: "GET", path: "/orders/1" },
-      response: { status_code: 200 },
-      content_hash: "sha256:abcdef0123456789",
-      review_status: { status: "reviewed" },
-    },
-  ]);
+test("renderCoverageGaps shows the no-span fallback when needs_classification has no related span", () => {
+  ui.renderCoverageGaps({
+    status: "needs_classification",
+    nanobar_type: "totally-unrecognized-type",
+    gaps: [],
+    related_span: null,
+  });
 
-  const rows = byId("bricks-table-body").querySelectorAll(".brick-row");
+  assert.equal(byId("coverage-needs-classification").hidden, false);
+  assert.equal(byId("needs-classification-span").hidden, true);
+  assert.equal(byId("needs-classification-no-span").hidden, false);
+});
+
+/* ---------------------------------------------------------------- bricks list (left pane) */
+
+test("renderBricksList shows the empty state for zero bricks", () => {
+  ui.renderBricksList([], () => {});
+
+  assert.equal(byId("bricks-empty").hidden, false);
+  assert.equal(byId("bricks-layout").hidden, true);
+});
+
+test("renderBricksList builds one row per brick with the expected contents", () => {
+  ui.renderBricksList(
+    [
+      {
+        regression_brick_id: "rbrick-1",
+        request: { method: "GET", path: "/orders/1" },
+        response: { status_code: 200 },
+        content_hash: "sha256:abcdef0123456789",
+        review_status: { status: "reviewed" },
+      },
+    ],
+    () => {}
+  );
+
+  const rows = byId("bricks-list").querySelectorAll(".brick-row");
   assert.equal(rows.length, 1);
   const row = rows[0];
   assert.equal(row.querySelector(".brick-method").textContent, "GET");
   assert.equal(row.querySelector(".brick-path").textContent, "/orders/1");
-  assert.equal(row.querySelector(".brick-status-code").textContent, "200");
-  assert.equal(row.querySelector(".brick-hash").textContent, "sha256:abcde");
-  assert.equal(row.querySelector(".brick-link").getAttribute("href"), "/admin/nanobar/bricks/rbrick-1");
+  assert.equal(row.querySelector(".brick-row-btn").dataset.brickId, "rbrick-1");
   const pill = row.querySelector(".review-pill");
   assert.equal(pill.textContent, "reviewed");
   assert.equal(pill.className, "review-pill review-pill-reviewed");
 });
 
-test("renderBricks falls back to placeholders for missing request/response/hash/status fields", () => {
-  ui.renderBricks([{ regression_brick_id: "rbrick-2", request: {}, response: {} }]);
+test("renderBricksList falls back to the route_key and 'new' status when fields are missing", () => {
+  ui.renderBricksList(
+    [{ regression_brick_id: "rbrick-2", request: {}, response: {}, source: { route_key: "POST /items" } }],
+    () => {}
+  );
 
-  const row = byId("bricks-table-body").querySelector(".brick-row");
-  assert.equal(row.querySelector(".brick-method").textContent, "?");
-  assert.equal(row.querySelector(".brick-path").textContent, "(no path)");
-  assert.equal(row.querySelector(".brick-status-code").textContent, "—");
-  assert.equal(row.querySelector(".brick-hash").textContent, "—");
+  const row = byId("bricks-list").querySelector(".brick-row");
+  assert.equal(row.querySelector(".brick-method").textContent, "POST");
+  assert.equal(row.querySelector(".brick-path").textContent, "/items");
   assert.equal(row.querySelector(".review-pill").textContent, "new");
 });
 
-test("renderBricks treats a path containing markup as inert text, not injected HTML", () => {
-  ui.renderBricks([
-    {
-      regression_brick_id: "rbrick-3",
-      request: { method: "GET", path: '<img src=x onerror="window.__pwned2=true">' },
-      response: {},
-    },
-  ]);
+test("renderBricksList treats a path containing markup as inert text, not injected HTML", () => {
+  ui.renderBricksList(
+    [
+      {
+        regression_brick_id: "rbrick-3",
+        request: { method: "GET", path: '<img src=x onerror="window.__pwned2=true">' },
+        response: {},
+      },
+    ],
+    () => {}
+  );
 
-  const pathEl = byId("bricks-table-body").querySelector(".brick-path");
+  const pathEl = byId("bricks-list").querySelector(".brick-path");
   assert.equal(pathEl.textContent, '<img src=x onerror="window.__pwned2=true">');
   assert.equal(pathEl.querySelector("img"), null);
   assert.equal(window.__pwned2, undefined);
+});
+
+test("clicking a brick row calls onSelect with that brick's id", () => {
+  const selected = [];
+  ui.renderBricksList(
+    [
+      { regression_brick_id: "rbrick-1", request: { method: "GET", path: "/a" }, response: {} },
+      { regression_brick_id: "rbrick-2", request: { method: "GET", path: "/b" }, response: {} },
+    ],
+    (brickId) => selected.push(brickId)
+  );
+
+  byId("bricks-list").querySelectorAll(".brick-row-btn")[1].click();
+
+  assert.deepEqual(selected, ["rbrick-2"]);
+});
+
+test("highlightSelectedBrick marks exactly one row selected", () => {
+  ui.renderBricksList(
+    [
+      { regression_brick_id: "rbrick-1", request: { method: "GET", path: "/a" }, response: {} },
+      { regression_brick_id: "rbrick-2", request: { method: "GET", path: "/b" }, response: {} },
+    ],
+    () => {}
+  );
+
+  ui.highlightSelectedBrick("rbrick-2");
+
+  const buttons = byId("bricks-list").querySelectorAll(".brick-row-btn");
+  assert.equal(buttons[0].classList.contains("brick-row-btn-selected"), false);
+  assert.equal(buttons[1].classList.contains("brick-row-btn-selected"), true);
+});
+
+/* -------------------------------------------------------- brick detail (right pane, Detail tab) */
+
+test("showBrickDetailEmpty shows the prompt and hides the detail panel", () => {
+  ui.renderBrickDetail({
+    regression_brick_id: "rbrick-1",
+    request: {},
+    response: {},
+    schema_version: "1.0",
+    brick_version: 1,
+    created_by: "test",
+    content_hash: "sha256:x",
+    source: {},
+  });
+  assert.equal(byId("brick-detail-panel").hidden, false);
+
+  ui.showBrickDetailEmpty();
+
+  assert.equal(byId("brick-detail-empty").hidden, false);
+  assert.equal(byId("brick-detail-panel").hidden, true);
+});
+
+test("renderBrickDetail fills in identity fields and request/response JSON", () => {
+  ui.renderBrickDetail({
+    regression_brick_id: "rbrick-1",
+    request: { method: "GET", path: "/orders/1" },
+    response: { status_code: 200 },
+    schema_version: "1.0",
+    brick_version: 1,
+    created_by: "test",
+    content_hash: "sha256:abcdef",
+    source: { route_key: "GET /orders/1" },
+    review_status: { status: "new" },
+    scenario: { regression_scenario_label: null, description: null },
+    tags: [],
+  });
+
+  assert.equal(byId("brick-detail-heading").textContent, "GET /orders/1");
+  assert.equal(byId("field-brick-id").textContent, "rbrick-1");
+  assert.equal(byId("field-content-hash").textContent, "sha256:abcdef");
+  assert.equal(JSON.parse(byId("request-json").textContent).path, "/orders/1");
+  assert.equal(JSON.parse(byId("response-json").textContent).status_code, 200);
+});
+
+/* -------------------------------------------------------------- tabs */
+
+test("showDetailTab and showRunTab toggle which panel is visible", () => {
+  ui.showRunTab();
+  assert.equal(byId("tab-run-panel").hidden, false);
+  assert.equal(byId("tab-detail-panel").hidden, true);
+  assert.equal(byId("tab-run-btn").getAttribute("aria-selected"), "true");
+
+  ui.showDetailTab();
+  assert.equal(byId("tab-detail-panel").hidden, false);
+  assert.equal(byId("tab-run-panel").hidden, true);
+  assert.equal(byId("tab-detail-btn").getAttribute("aria-selected"), "true");
+});
+
+/* -------------------------------------------------------------- Run tab */
+
+test("setRunBusy toggles the Run button's disabled state and label", () => {
+  ui.setRunBusy(true);
+  assert.equal(byId("run-btn").disabled, true);
+  assert.equal(byId("run-btn").textContent, "Running…");
+
+  ui.setRunBusy(false);
+  assert.equal(byId("run-btn").disabled, false);
+  assert.equal(byId("run-btn").textContent, "Run");
+});
+
+test("resetRunTab clears any previous verdict/spans and disables Refresh", () => {
+  ui.renderVerdict({
+    overall_passed: true,
+    status_layer: { passed: true, detail: "ok" },
+    schema_layer: { passed: true, detail: "ok" },
+    pinned_field_layer: { passed: true, detail: "ok" },
+  });
+  assert.equal(byId("refresh-btn").disabled, false);
+
+  ui.resetRunTab();
+
+  assert.equal(byId("run-verdict").hidden, true);
+  assert.equal(byId("refresh-btn").disabled, true);
+});
+
+test("renderVerdict shows pass/fail per layer and enables Refresh", () => {
+  ui.renderVerdict({
+    overall_passed: false,
+    status_layer: { passed: true, detail: "matched" },
+    schema_layer: { passed: false, detail: "mismatch" },
+    pinned_field_layer: { passed: false, detail: "skipped" },
+  });
+
+  assert.equal(byId("run-verdict").hidden, false);
+  assert.equal(byId("run-verdict").classList.contains("run-verdict-fail"), true);
+  assert.match(byId("run-verdict").textContent, /FAIL/);
+  assert.equal(byId("refresh-btn").disabled, false);
+});
+
+test("renderRunSpans builds one row per span with a nanobar_type badge when tagged", () => {
+  ui.renderRunSpans([
+    { payload: { name: "controller.POST /x", nanobar_type: "controller-request-response", status_code: 200 } },
+    { payload: { name: "GET /x" } },
+  ]);
+
+  const rows = byId("run-spans-list").querySelectorAll(".run-span-row");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].querySelector(".run-span-nanobar-type").hidden, false);
+  assert.equal(rows[1].querySelector(".run-span-nanobar-type").hidden, true);
+});
+
+test("renderRunSpans hides the wrap for an empty span list", () => {
+  ui.renderRunSpans([]);
+
+  assert.equal(byId("run-spans-wrap").hidden, true);
 });
 
 /* ------------------------------------------------------------ page status */
@@ -209,7 +395,7 @@ test("showLoading, showNotFound, showNetworkError, and clearPageStatus toggle th
   assert.equal(byId("page-status").className, "page-status page-status-error");
 
   ui.showNetworkError();
-  assert.equal(byId("page-status").textContent, "Could not reach the server. Please try again.");
+  assert.equal(byId("page-status").textContent, "Could not reach the server. Please refresh the page and try again.");
 
   ui.clearPageStatus();
   assert.equal(byId("page-status").hidden, true);

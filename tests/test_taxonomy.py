@@ -261,6 +261,64 @@ def test_compute_regression_weight_unknown_nanobar_type_returns_unchanged() -> N
     assert weight == 0.42
 
 
+def test_compute_regression_weight_resolves_replay_prefixed_type_to_the_original() -> None:
+    # A replay of a widget-request-response brick (demo/dashboard/api.py's Run tab tags its
+    # marker span "replay-{original nanobar_type}") is judged by the *original* type's own
+    # expected scenarios, not left unresolved just because "replay-widget-request-response"
+    # itself was never a literal taxonomy key.
+    nanobar = _make_nanobar(nanobar_type="replay-widget-request-response", criticality=1.0)
+    bricks = [_make_brick("success"), _make_brick("not_found"), _make_brick("server_error")]
+
+    weight = compute_regression_weight(nanobar, bricks, _TEST_TAXONOMY)
+
+    assert weight == pytest.approx(1.0)
+
+
+def test_compute_regression_weight_resolves_worker_prefixed_type_to_the_generic_worker_entry() -> None:
+    # NanobarWorker._process_one tags f"worker-{event.channel}" -- channel varies per app, so
+    # this falls back to one channel-agnostic "worker" taxonomy entry.
+    taxonomy: NanobarTypeTaxonomy = {
+        **_TEST_TAXONOMY,
+        "worker": NanobarTypeEntry(
+            expected_scenarios={
+                "success": ExpectedScenario(weight=1.0, required=True, synthesizable=False),
+                "server_error": ExpectedScenario(weight=0.5, required=True, synthesizable=False),
+            }
+        ),
+    }
+    nanobar = _make_nanobar(nanobar_type="worker-domain.appointments", criticality=1.0)
+
+    weight = compute_regression_weight(nanobar, [_make_brick("success")], taxonomy)
+
+    assert weight == pytest.approx((1.0 / 1.5) * 1.0)
+
+
+def test_compute_regression_weight_resolves_replay_of_a_worker_type_transitively() -> None:
+    # replay-worker-{channel}: strip "replay-" -> "worker-{channel}" -> not a literal key ->
+    # falls through to the generic "worker" entry too, not left unresolved after one strip.
+    taxonomy: NanobarTypeTaxonomy = {
+        **_TEST_TAXONOMY,
+        "worker": NanobarTypeEntry(
+            expected_scenarios={"success": ExpectedScenario(weight=1.0, required=True, synthesizable=False)}
+        ),
+    }
+    nanobar = _make_nanobar(nanobar_type="replay-worker-domain.appointments", criticality=1.0)
+
+    weight = compute_regression_weight(nanobar, [_make_brick("success")], taxonomy)
+
+    assert weight == pytest.approx(1.0)
+
+
+def test_compute_regression_weight_worker_prefix_with_no_generic_worker_entry_is_unresolved() -> None:
+    nanobar = _make_nanobar(nanobar_type="worker-domain.appointments", criticality=1.0)
+
+    # _TEST_TAXONOMY has no "worker" entry -- the prefix is recognized but still resolves to
+    # None, same "unresolved" fallback as a genuinely unknown type.
+    weight = compute_regression_weight(nanobar, [_make_brick("success")], _TEST_TAXONOMY)
+
+    assert weight == nanobar.regression_weight
+
+
 def test_compute_regression_weight_zero_required_scenarios_returns_criticality() -> None:
     nanobar = _make_nanobar(nanobar_type="no-required-scenarios-type", criticality=0.65)
 
@@ -284,6 +342,15 @@ def test_detect_coverage_gaps_lists_missing_required_scenarios_only() -> None:
 
     assert set(gaps) == {"not_found", "server_error"}
     assert "conflict" not in gaps  # not required -- not a "gap"
+
+
+def test_detect_coverage_gaps_resolves_replay_prefixed_type_to_the_original() -> None:
+    nanobar = _make_nanobar(nanobar_type="replay-widget-request-response")
+    bricks = [_make_brick("success")]
+
+    gaps = detect_coverage_gaps(nanobar, bricks, _TEST_TAXONOMY)
+
+    assert set(gaps) == {"not_found", "server_error"}
 
 
 def test_detect_coverage_gaps_unknown_nanobar_type_is_empty() -> None:

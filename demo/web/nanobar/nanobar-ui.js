@@ -1,5 +1,9 @@
 // nanobar-ui.js
-// Pure DOM rendering/manipulation for the nanobar detail page.
+// Pure DOM rendering/manipulation for the nanobar detail page: the nanobar's own summary/edit
+// form/coverage-gaps (unchanged from before this build), and a master-detail bricks section
+// (bound bricks on the left, the selected brick's Detail/Run tabs on the right -- the Detail
+// tab's rendering logic is what the now-retired brick.html/brick-ui.js used to own, relocated
+// here verbatim aside from id/selector changes forced by no longer being its own page).
 // No fetch() calls happen in this file.
 
 const titleEl = document.getElementById("nanobar-title");
@@ -12,8 +16,8 @@ const summaryGridEl = document.getElementById("summary-grid");
 const summaryTargetsEl = document.getElementById("summary-targets");
 
 const bricksStatusEl = document.getElementById("bricks-status");
-const bricksTableWrapEl = document.getElementById("bricks-table-wrap");
-const bricksTableBodyEl = document.getElementById("bricks-table-body");
+const bricksLayoutEl = document.getElementById("bricks-layout");
+const bricksListEl = document.getElementById("bricks-list");
 const bricksEmptyEl = document.getElementById("bricks-empty");
 
 const brickRowTemplate = document.getElementById("brick-row-template");
@@ -78,7 +82,7 @@ export function showNetworkError(message) {
 
   pageStatusEl.hidden = false;
   pageStatusEl.className = "page-status page-status-error";
-  pageStatusEl.textContent = message || "Could not reach the server. Please try again.";
+  pageStatusEl.textContent = message || "Could not reach the server. Please refresh the page and try again.";
 
   summarySectionEl.hidden = true;
   hideBricksContent();
@@ -91,17 +95,17 @@ export function clearPageStatus() {
 }
 
 function hideBricksContent() {
-  bricksTableWrapEl.hidden = true;
+  bricksLayoutEl.hidden = true;
   bricksEmptyEl.hidden = true;
 }
 
 /* --------------------------------------------------------------- summary */
 
 /**
- * Renders the nanobar's own top-level fields, found client-side from the
- * full /api/nanobars list. If `nanobar` is null (couldn't be found in that
- * list, e.g. it was deleted between requests), the summary section stays
- * hidden and only the page title/subtitle fall back to the id.
+ * Renders the nanobar's own top-level fields from `GET .../nanobars/{id}`. If `nanobar` is
+ * null (the best-effort fetch failed for some reason other than a 404, which is handled by
+ * showNotFound above), the summary section stays hidden and only the page title/subtitle fall
+ * back to the id.
  */
 export function renderSummary(nanobarId, nanobar) {
   document.title = `${nanobar ? nanobar.system_name : nanobarId} · NanobarAPI`;
@@ -212,14 +216,24 @@ const coverageGapsSectionEl = document.getElementById("coverage-gaps-section");
 const coverageGapsStatusEl = document.getElementById("coverage-gaps-status");
 const coverageGapsListEl = document.getElementById("coverage-gaps-list");
 const coverageGapsEmptyEl = document.getElementById("coverage-gaps-empty");
+const needsClassificationEl = document.getElementById("coverage-needs-classification");
+const needsClassificationTypeEl = document.getElementById("needs-classification-type");
+const needsClassificationSpanEl = document.getElementById("needs-classification-span");
+const needsClassificationSpanLinkEl = document.getElementById("needs-classification-span-link");
+const needsClassificationNoSpanEl = document.getElementById("needs-classification-no-span");
+
+function hideCoverageGapsContent() {
+  coverageGapsListEl.hidden = true;
+  coverageGapsEmptyEl.hidden = true;
+  needsClassificationEl.hidden = true;
+}
 
 export function showCoverageGapsLoading() {
   coverageGapsSectionEl.hidden = false;
   coverageGapsStatusEl.hidden = false;
   coverageGapsStatusEl.className = "coverage-gaps-status";
   coverageGapsStatusEl.textContent = "Loading…";
-  coverageGapsListEl.hidden = true;
-  coverageGapsEmptyEl.hidden = true;
+  hideCoverageGapsContent();
 }
 
 export function showCoverageGapsError(message) {
@@ -227,23 +241,47 @@ export function showCoverageGapsError(message) {
   coverageGapsStatusEl.hidden = false;
   coverageGapsStatusEl.className = "coverage-gaps-status coverage-gaps-status-error";
   coverageGapsStatusEl.textContent = message || "Could not load coverage gaps.";
-  coverageGapsListEl.hidden = true;
-  coverageGapsEmptyEl.hidden = true;
+  hideCoverageGapsContent();
 }
 
-/** Renders the "missing coverage" list — one pill per required scenario type this nanobar's
- * type expects but has no bound brick for. Empty means fully covered. */
-export function renderCoverageGaps(gaps) {
+/**
+ * Renders the coverage-gaps response: `{"status": "classified", "gaps": [...]}` — one pill per
+ * required scenario type this nanobar's type expects but has no bound brick for, empty meaning
+ * fully covered — or `{"status": "needs_classification", "gaps": [], "related_span": {...} |
+ * null}` for a `nanobar_type` this app's taxonomy has no entry (static or dynamic) for at all.
+ * The two states are deliberately never conflated: an unresolvable type used to render
+ * identically to "fully covered" (both an empty gaps list), which looked reassuring but meant
+ * nothing had actually been measured.
+ * @param {{status: "classified"|"needs_classification", gaps: string[], nanobar_type?: string, related_span?: {trace_id: string, event_id: string, name: string|null, recorded_at_ns: number} | null}} data
+ */
+export function renderCoverageGaps(data) {
   coverageGapsSectionEl.hidden = false;
   coverageGapsStatusEl.hidden = true;
+  hideCoverageGapsContent();
 
+  if (data.status === "needs_classification") {
+    needsClassificationEl.hidden = false;
+    needsClassificationTypeEl.textContent = data.nanobar_type;
+
+    if (data.related_span) {
+      needsClassificationSpanEl.hidden = false;
+      needsClassificationNoSpanEl.hidden = true;
+      const { trace_id: traceId, event_id: eventId, name } = data.related_span;
+      needsClassificationSpanLinkEl.href = `/admin/nanobar/traces/${encodeURIComponent(traceId)}#span-${encodeURIComponent(eventId)}`;
+      needsClassificationSpanLinkEl.textContent = name || eventId;
+    } else {
+      needsClassificationSpanEl.hidden = true;
+      needsClassificationNoSpanEl.hidden = false;
+    }
+    return;
+  }
+
+  const gaps = data.gaps;
   if (!gaps || gaps.length === 0) {
-    coverageGapsListEl.hidden = true;
     coverageGapsEmptyEl.hidden = false;
     return;
   }
 
-  coverageGapsEmptyEl.hidden = true;
   coverageGapsListEl.hidden = false;
   coverageGapsListEl.textContent = "";
   for (const scenarioType of gaps) {
@@ -254,7 +292,7 @@ export function renderCoverageGaps(gaps) {
   }
 }
 
-/* ---------------------------------------------------------------- bricks */
+/* ---------------------------------------------------------------- bricks list (left pane) */
 
 export function showBricksLoading() {
   bricksStatusEl.hidden = false;
@@ -270,52 +308,384 @@ export function showBricksError(message) {
   hideBricksContent();
 }
 
-/** Renders the bricks table (or the empty state) from an array of RegressionBrick objects
- * (each already carrying a `review_status` object, per the bricks-for-nanobar endpoint). */
-export function renderBricks(bricks) {
+/**
+ * Renders the bricks list (left pane) from an array of RegressionBrick objects (each already
+ * carrying a `review_status` object, per the bricks-for-nanobar endpoint). Each row is a button
+ * carrying the brick's id as `data-brick-id`; `onSelect` is called with that id on click.
+ */
+export function renderBricksList(bricks, onSelect) {
   bricksStatusEl.hidden = true;
 
   if (!bricks || bricks.length === 0) {
-    bricksTableWrapEl.hidden = true;
+    bricksLayoutEl.hidden = true;
     bricksEmptyEl.hidden = false;
     return;
   }
 
   bricksEmptyEl.hidden = true;
-  bricksTableWrapEl.hidden = false;
-  bricksTableBodyEl.textContent = "";
+  bricksLayoutEl.hidden = false;
+  bricksListEl.textContent = "";
 
   for (const brick of bricks) {
-    bricksTableBodyEl.appendChild(buildBrickRow(brick));
+    bricksListEl.appendChild(buildBrickRow(brick, onSelect));
   }
 }
 
-function buildBrickRow(brick) {
+function buildBrickRow(brick, onSelect) {
   const fragment = brickRowTemplate.content.cloneNode(true);
-  const rowEl = fragment.querySelector(".brick-row");
-  const link = fragment.querySelector(".brick-link");
+  const btn = fragment.querySelector(".brick-row-btn");
   const methodEl = fragment.querySelector(".brick-method");
   const pathEl = fragment.querySelector(".brick-path");
-  const statusCodeEl = fragment.querySelector(".brick-status-code");
-  const hashEl = fragment.querySelector(".brick-hash");
   const pillEl = fragment.querySelector(".review-pill");
 
   const request = brick.request || {};
-  const response = brick.response || {};
+  const routeKey = (brick.source && brick.source.route_key) || "";
+  const [routeKeyMethod, routeKeyPath] = [routeKey.split(" ")[0] || "", routeKey.split(" ").slice(1).join(" ")];
   const reviewStatus = (brick.review_status && brick.review_status.status) || "new";
 
-  link.href = `/admin/nanobar/bricks/${encodeURIComponent(brick.regression_brick_id)}`;
-  methodEl.textContent = request.method || "?";
-  pathEl.textContent = request.path || "(no path)";
-
-  statusCodeEl.textContent =
-    response.status_code === undefined || response.status_code === null ? "—" : String(response.status_code);
-
-  hashEl.textContent = brick.content_hash ? brick.content_hash.slice(0, CONTENT_HASH_PREFIX_LENGTH) : "—";
-  hashEl.title = brick.content_hash || "";
+  methodEl.textContent = request.method || routeKeyMethod || "?";
+  pathEl.textContent = request.path || routeKeyPath || "(no path)";
 
   pillEl.textContent = reviewStatus;
   pillEl.className = `review-pill ${REVIEW_PILL_CLASSES[reviewStatus] || "review-pill-new"}`;
 
-  return rowEl;
+  btn.dataset.brickId = brick.regression_brick_id;
+  btn.addEventListener("click", () => onSelect(brick.regression_brick_id));
+
+  return fragment;
+}
+
+/** Marks exactly one brick row as selected (visual highlight), clearing any previous selection. */
+export function highlightSelectedBrick(brickId) {
+  for (const btn of bricksListEl.querySelectorAll(".brick-row-btn")) {
+    btn.classList.toggle("brick-row-btn-selected", btn.dataset.brickId === brickId);
+  }
+}
+
+/* ------------------------------------------------------- brick detail (right pane, Detail tab) */
+
+const brickDetailEmptyEl = document.getElementById("brick-detail-empty");
+const brickDetailPanelEl = document.getElementById("brick-detail-panel");
+
+const brickDetailHeadingEl = document.getElementById("brick-detail-heading");
+
+const fieldBrickIdEl = document.getElementById("field-brick-id");
+const fieldContentHashEl = document.getElementById("field-content-hash");
+const fieldSchemaVersionEl = document.getElementById("field-schema-version");
+const fieldBrickVersionEl = document.getElementById("field-brick-version");
+const fieldCreatedByEl = document.getElementById("field-created-by");
+const fieldSourceEl = document.getElementById("field-source");
+const fieldScenarioTypeRowEl = document.getElementById("field-scenario-type-row");
+const fieldScenarioTypeEl = document.getElementById("field-scenario-type");
+
+const reviewPillEl = document.getElementById("review-pill");
+const reviewButtonEls = Array.from(document.querySelectorAll(".review-btn"));
+const reviewErrorEl = document.getElementById("review-error");
+
+const requestJsonEl = document.getElementById("request-json");
+const responseJsonEl = document.getElementById("response-json");
+
+const scenarioFormEl = document.getElementById("scenario-form");
+const scenarioLabelEl = document.getElementById("scenario-label");
+const scenarioDescriptionEl = document.getElementById("scenario-description");
+const scenarioSaveBtnEl = document.getElementById("scenario-save-btn");
+const scenarioErrorEl = document.getElementById("scenario-error");
+const scenarioSuccessEl = document.getElementById("scenario-success");
+
+const tagsListEl = document.getElementById("tags-list");
+const tagChipTemplate = document.getElementById("tag-chip-template");
+const tagAddFormEl = document.getElementById("tag-add-form");
+const tagAddInputEl = document.getElementById("tag-add-input");
+const tagsErrorEl = document.getElementById("tags-error");
+
+elements.scenarioForm = scenarioFormEl;
+elements.tagAddForm = tagAddFormEl;
+elements.tagsList = tagsListEl;
+elements.reviewButtons = reviewButtonEls;
+
+/** Shows the right pane's "nothing selected yet" prompt, hiding any previously selected
+ * brick's detail panel. */
+export function showBrickDetailEmpty() {
+  brickDetailEmptyEl.hidden = false;
+  brickDetailPanelEl.hidden = true;
+}
+
+/**
+ * Renders the full brick detail view (Detail tab) from a RegressionBrick object (as returned
+ * by GET /api/bricks/{brick_id}, including the attached `review_status`).
+ */
+export function renderBrickDetail(brick) {
+  brickDetailEmptyEl.hidden = true;
+  brickDetailPanelEl.hidden = false;
+
+  const request = brick.request || {};
+  const routeKey = (brick.source && brick.source.route_key) || "";
+  brickDetailHeadingEl.textContent = request.method || request.path ? `${request.method || ""} ${request.path || ""}`.trim() : routeKey || brick.regression_brick_id;
+
+  fieldBrickIdEl.textContent = brick.regression_brick_id;
+  fieldContentHashEl.textContent = brick.content_hash;
+  fieldSchemaVersionEl.textContent = brick.schema_version;
+  fieldBrickVersionEl.textContent = brick.brick_version;
+  fieldCreatedByEl.textContent = brick.created_by;
+  fieldSourceEl.textContent = JSON.stringify(brick.source);
+
+  if (brick.regression_scenario_type) {
+    fieldScenarioTypeRowEl.hidden = false;
+    fieldScenarioTypeEl.textContent = brick.regression_scenario_type;
+  } else {
+    fieldScenarioTypeRowEl.hidden = true;
+  }
+
+  renderReviewStatus(brick.review_status);
+  renderScenario(brick.scenario);
+  renderTags(brick.tags);
+
+  requestJsonEl.textContent = JSON.stringify(brick.request, null, 2);
+  responseJsonEl.textContent = JSON.stringify(brick.response, null, 2);
+}
+
+/**
+ * Updates the review-status pill and the "active" button highlight from a
+ * review_status object: { regression_brick_id, status, updated_by }.
+ */
+export function renderReviewStatus(reviewStatus) {
+  const status = reviewStatus ? reviewStatus.status : null;
+  reviewPillEl.textContent = status || "Unknown";
+  if (status) {
+    reviewPillEl.dataset.status = status;
+  } else {
+    delete reviewPillEl.dataset.status;
+  }
+
+  for (const btn of reviewButtonEls) {
+    btn.classList.toggle("is-active", btn.dataset.status === status);
+  }
+}
+
+export function showReviewError(message) {
+  reviewErrorEl.textContent = message;
+  reviewErrorEl.hidden = false;
+}
+
+export function clearReviewError() {
+  reviewErrorEl.textContent = "";
+  reviewErrorEl.hidden = true;
+}
+
+/** Disables/enables all review-status buttons (e.g. while a request is in flight). */
+export function setReviewButtonsBusy(isBusy) {
+  for (const btn of reviewButtonEls) {
+    btn.disabled = isBusy;
+  }
+}
+
+/** Pre-fills the scenario form's inputs from a `BrickScenario` object (as attached to a
+ * brick detail response's `scenario` field) — the form doubles as this section's display of
+ * the current values, so they aren't shown a second time read-only. */
+export function renderScenario(scenario) {
+  scenarioLabelEl.value = (scenario && scenario.regression_scenario_label) || "";
+  scenarioDescriptionEl.value = (scenario && scenario.description) || "";
+}
+
+/** Reads the scenario form's current field values as a partial-update payload. */
+export function readScenarioFormFields() {
+  return {
+    regression_scenario_label: scenarioLabelEl.value,
+    description: scenarioDescriptionEl.value,
+  };
+}
+
+export function showScenarioError(message) {
+  scenarioSuccessEl.hidden = true;
+  scenarioErrorEl.textContent = message;
+  scenarioErrorEl.hidden = false;
+}
+
+export function showScenarioSuccess(message) {
+  scenarioErrorEl.hidden = true;
+  scenarioSuccessEl.textContent = message;
+  scenarioSuccessEl.hidden = false;
+}
+
+export function clearScenarioMessages() {
+  scenarioErrorEl.hidden = true;
+  scenarioSuccessEl.hidden = true;
+}
+
+export function setScenarioFormBusy(isBusy) {
+  scenarioSaveBtnEl.disabled = isBusy;
+  scenarioSaveBtnEl.textContent = isBusy ? "Saving…" : "Save";
+}
+
+/** Renders the tag chip list from a plain array of tag strings. Each chip carries the tag
+ * as a `data-tag` attribute on its remove button, for the controller's delegated click
+ * handler to read. */
+export function renderTags(tags) {
+  tagsListEl.textContent = "";
+  for (const tag of tags || []) {
+    const node = tagChipTemplate.content.cloneNode(true);
+    node.querySelector(".tag-chip-text").textContent = tag;
+    node.querySelector(".tag-chip-remove").dataset.tag = tag;
+    tagsListEl.appendChild(node);
+  }
+}
+
+export function showTagsError(message) {
+  tagsErrorEl.textContent = message;
+  tagsErrorEl.hidden = false;
+}
+
+export function clearTagsError() {
+  tagsErrorEl.hidden = true;
+}
+
+export function readTagAddInput() {
+  return tagAddInputEl.value.trim();
+}
+
+export function clearTagAddInput() {
+  tagAddInputEl.value = "";
+}
+
+/* -------------------------------------------------------------- tabs (Detail / Run) */
+
+const tabDetailBtnEl = document.getElementById("tab-detail-btn");
+const tabRunBtnEl = document.getElementById("tab-run-btn");
+const tabDetailPanelEl = document.getElementById("tab-detail-panel");
+const tabRunPanelEl = document.getElementById("tab-run-panel");
+
+elements.tabDetailBtn = tabDetailBtnEl;
+elements.tabRunBtn = tabRunBtnEl;
+
+export function showDetailTab() {
+  tabDetailBtnEl.classList.add("brick-tab-btn-active");
+  tabDetailBtnEl.setAttribute("aria-selected", "true");
+  tabRunBtnEl.classList.remove("brick-tab-btn-active");
+  tabRunBtnEl.setAttribute("aria-selected", "false");
+  tabDetailPanelEl.hidden = false;
+  tabRunPanelEl.hidden = true;
+}
+
+export function showRunTab() {
+  tabRunBtnEl.classList.add("brick-tab-btn-active");
+  tabRunBtnEl.setAttribute("aria-selected", "true");
+  tabDetailBtnEl.classList.remove("brick-tab-btn-active");
+  tabDetailBtnEl.setAttribute("aria-selected", "false");
+  tabRunPanelEl.hidden = false;
+  tabDetailPanelEl.hidden = true;
+}
+
+/** Resets the Run tab back to its just-selected-this-brick state — no prior run's verdict/spans
+ * left showing from a previously selected brick. */
+export function resetRunTab() {
+  runStatusEl.hidden = true;
+  runVerdictEl.hidden = true;
+  runVerdictEl.textContent = "";
+  runSpansWrapEl.hidden = true;
+  runSpansListEl.textContent = "";
+  refreshBtnEl.disabled = true;
+}
+
+/* -------------------------------------------------------------- Run tab */
+
+const runBtnEl = document.getElementById("run-btn");
+const refreshBtnEl = document.getElementById("refresh-btn");
+const runStatusEl = document.getElementById("run-status");
+const runVerdictEl = document.getElementById("run-verdict");
+const runSpansWrapEl = document.getElementById("run-spans-wrap");
+const runSpansListEl = document.getElementById("run-spans-list");
+const runSpanRowTemplate = document.getElementById("run-span-row-template");
+
+elements.runBtn = runBtnEl;
+elements.refreshBtn = refreshBtnEl;
+
+export function setRunBusy(isBusy) {
+  runBtnEl.disabled = isBusy;
+  runBtnEl.textContent = isBusy ? "Running…" : "Run";
+}
+
+export function setRefreshBusy(isBusy) {
+  refreshBtnEl.disabled = isBusy;
+}
+
+export function showRunStatus(message) {
+  runStatusEl.hidden = false;
+  runStatusEl.className = "run-status";
+  runStatusEl.textContent = message;
+}
+
+export function showRunError(message) {
+  runStatusEl.hidden = false;
+  runStatusEl.className = "run-status run-status-error";
+  runStatusEl.textContent = message;
+}
+
+const VERDICT_LAYER_LABELS = {
+  status_layer: "Status",
+  schema_layer: "Schema",
+  pinned_field_layer: "Pinned fields",
+};
+
+/**
+ * Renders a `Verdict` object (`{overall_passed, status_layer, schema_layer,
+ * pinned_field_layer}`, each `*_layer` a `{passed, detail}`) as a pass/fail summary, and
+ * enables the Refresh button now that there's a trace to watch.
+ */
+export function renderVerdict(verdict) {
+  runStatusEl.hidden = true;
+  runVerdictEl.hidden = false;
+  runVerdictEl.textContent = "";
+  runVerdictEl.className = `run-verdict ${verdict.overall_passed ? "run-verdict-pass" : "run-verdict-fail"}`;
+
+  const overall = document.createElement("p");
+  overall.className = "run-verdict-overall";
+  overall.textContent = verdict.overall_passed ? "PASS — replay matches the original capture." : "FAIL — replay differs from the original capture.";
+  runVerdictEl.appendChild(overall);
+
+  for (const [key, label] of Object.entries(VERDICT_LAYER_LABELS)) {
+    const layer = verdict[key];
+    if (!layer) continue;
+    const row = document.createElement("p");
+    row.className = `run-verdict-layer ${layer.passed ? "run-verdict-layer-pass" : "run-verdict-layer-fail"}`;
+    row.textContent = `${label}: ${layer.passed ? "pass" : "fail"} — ${layer.detail}`;
+    runVerdictEl.appendChild(row);
+  }
+
+  refreshBtnEl.disabled = false;
+}
+
+/** Renders the replay's own trace's spans (name, nanobar_type badge if tagged, status/error) as
+ * a flat, read-only list — a lighter-weight rendering than the full trace-detail page's
+ * master-detail view, since this is just "what happened during this one replay," not a general
+ * trace browser. */
+export function renderRunSpans(events) {
+  runSpansListEl.textContent = "";
+
+  if (!events || events.length === 0) {
+    runSpansWrapEl.hidden = true;
+    return;
+  }
+
+  runSpansWrapEl.hidden = false;
+  for (const event of events) {
+    const payload = event.payload || {};
+    const fragment = runSpanRowTemplate.content.cloneNode(true);
+    const row = fragment.querySelector(".run-span-row");
+    fragment.querySelector(".run-span-name").textContent = payload.name || "(unnamed span)";
+
+    const badgeEl = fragment.querySelector(".run-span-nanobar-type");
+    if (payload.nanobar_type) {
+      badgeEl.textContent = payload.nanobar_type;
+      badgeEl.hidden = false;
+    }
+
+    const statusEl = fragment.querySelector(".run-span-status");
+    statusEl.textContent = payload.status_code != null ? String(payload.status_code) : payload.status || "—";
+
+    if (payload.error) {
+      row.classList.add("run-span-row-error");
+    }
+
+    runSpansListEl.appendChild(fragment);
+  }
 }

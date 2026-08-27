@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings · Nanobar Dashboard</title>
+  <link rel="stylesheet" href="/static/settings/settings.css" />
+</head>
+<body>
+  <div class="page">
+    <nav class="top-nav" aria-label="Primary">
+      <a href="/admin/nanobar/dashboard">Nanobars</a>
+      <a href="/admin/nanobar/triage">Triage board</a>
+      <a href="/admin/nanobar/traces">Traces</a>
+      <a href="/admin/nanobar/workers">Workers</a>
+      <a href="/admin/nanobar/dashboard/settings" aria-current="page">Settings</a>
+    </nav>
+
+    <header class="page-header">
+      <h1 class="page-title">Settings</h1>
+      <p class="page-subtitle">Runtime controls for this dashboard instance.</p>
+    </header>
+
+    <main class="page-main">
+      <div id="settings-status" class="settings-status" hidden></div>
+
+      <section class="settings-section" aria-labelledby="tracing-heading">
+        <div class="settings-row">
+          <div class="settings-row-text">
+            <h2 id="tracing-heading" class="settings-row-title">Trace capture</h2>
+            <p class="settings-row-description">
+              Whether <code>EventBusTraceMiddleware</code> records a span for every HTTP
+              request into the eventbus. On by default in this dev app. Turning this off
+              stops new spans from appearing on the
+              <a href="/admin/nanobar/traces">Traces</a> page -- it does not delete any
+              already-captured ones.
+            </p>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="tracing-toggle" disabled />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+        <p id="tracing-toggle-error" class="settings-error" role="alert" hidden></p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="refresh-heading">
+        <h2 id="refresh-heading" class="settings-section-heading">Refresh cycles</h2>
+
+        <div class="refresh-row">
+          <div class="settings-row-text">
+            <h3 class="settings-row-title">API routes</h3>
+            <p class="settings-row-description">
+              Re-scans this app's route tree and rewrites <code>nanobar.api-routes.json</code>
+              -- also runs automatically every time the app starts.
+            </p>
+            <p id="api-routes-refresh-last-run" class="refresh-last-run"></p>
+          </div>
+          <button type="button" id="api-routes-refresh-btn" class="refresh-btn">Refresh</button>
+        </div>
+        <p id="api-routes-refresh-status" class="refresh-status" hidden></p>
+
+        <div class="refresh-row">
+          <div class="settings-row-text">
+            <h3 class="settings-row-title">Nanobars</h3>
+            <p class="settings-row-description">
+              Reconciles nanobars against the current route manifest: creates an
+              <code>unclassified</code> placeholder for any declared route with no nanobar yet,
+              and corrects <code>domain</code> on existing ones.
+            </p>
+            <p id="nanobars-refresh-last-run" class="refresh-last-run"></p>
+          </div>
+          <button type="button" id="nanobars-refresh-btn" class="refresh-btn">Refresh</button>
+        </div>
+        <p id="nanobars-refresh-status" class="refresh-status" hidden></p>
+
+        <div class="refresh-row">
+          <div class="settings-row-text">
+            <h3 class="settings-row-title">Regression bricks</h3>
+            <p class="settings-row-description">
+              Drains captured traffic into regression bricks and binds them to nanobars -- the
+              same action as the "Generate bricks" button on the
+              <a href="/admin/nanobar/dashboard">Nanobars</a> page.
+            </p>
+            <p id="bricks-refresh-last-run" class="refresh-last-run"></p>
+          </div>
+          <button type="button" id="bricks-refresh-btn" class="refresh-btn">Refresh</button>
+        </div>
+        <p id="bricks-refresh-status" class="refresh-status" hidden></p>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/static/settings/settings-controller.js"></script>
+</body>
+</html>

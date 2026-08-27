@@ -12,17 +12,34 @@
       <a href="/admin/nanobar/dashboard" aria-current="page">Nanobars</a>
       <a href="/admin/nanobar/triage">Triage board</a>
       <a href="/admin/nanobar/traces">Traces</a>
+      <a href="/admin/nanobar/workers">Workers</a>
+      <a href="/admin/nanobar/dashboard/settings">Settings</a>
     </nav>
 
     <header class="page-header">
       <h1 class="page-title">Nanobar Dashboard</h1>
-      <p class="page-subtitle">All nanobars, grouped by monitored target type.</p>
+      <p class="page-subtitle">All nanobars, grouped by nanobar type &mdash; the application layer each regression-brick span belongs to.</p>
+      <button type="button" id="generate-bricks-btn" class="generate-bricks-btn">Generate bricks</button>
+      <p id="generate-bricks-status" class="generate-bricks-status" hidden></p>
     </header>
 
     <div class="filter-bar">
-      <label for="track-type-filter" class="filter-label">Track type</label>
-      <select id="track-type-filter" class="filter-select">
-        <option value="">All track types</option>
+      <label for="nanobar-search" class="filter-label">Search</label>
+      <input
+        type="search"
+        id="nanobar-search"
+        class="filter-search"
+        placeholder="label, scenario, component, domain, type, or id"
+      />
+
+      <label for="nanobar-type-filter" class="filter-label">Nanobar type</label>
+      <select id="nanobar-type-filter" class="filter-select">
+        <option value="">All nanobar types</option>
+      </select>
+
+      <label for="domain-filter" class="filter-label">Domain</label>
+      <select id="domain-filter" class="filter-select">
+        <option value="__all__">All domains</option>
       </select>
     </div>
 
@@ -35,14 +52,20 @@
         <p class="empty-state-title">No nanobars found yet</p>
         <p class="empty-state-text">Nanobars will show up here once they've been generated.</p>
       </div>
+
+      <nav id="pagination" class="pagination" hidden aria-label="Pagination">
+        <button type="button" id="pagination-prev-btn" class="pagination-btn">&larr; Prev</button>
+        <span id="pagination-summary" class="pagination-summary"></span>
+        <button type="button" id="pagination-next-btn" class="pagination-btn">Next &rarr;</button>
+      </nav>
     </main>
   </div>
 
-  <template id="target-group-template">
-    <section class="target-group">
-      <header class="target-group-header">
-        <h2 class="target-group-title"></h2>
-        <span class="target-group-count"></span>
+  <template id="nanobar-type-group-template">
+    <section class="nanobar-type-group">
+      <header class="nanobar-type-group-header">
+        <h2 class="nanobar-type-group-title"></h2>
+        <span class="nanobar-type-group-count"></span>
       </header>
       <ul class="nanobar-list"></ul>
     </section>
@@ -53,7 +76,6 @@
       <a class="nanobar-link">
         <span class="nanobar-id"></span>
         <span class="nanobar-system"></span>
-        <span class="nanobar-track-type"></span>
         <span class="nanobar-label"></span>
       </a>
     </li>

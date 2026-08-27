@@ -63,6 +63,38 @@ body {
   margin-bottom: 2.5rem;
 }
 
+.generate-bricks-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.generate-bricks-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.generate-bricks-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.generate-bricks-status {
+  margin: 0.6rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.generate-bricks-status-error {
+  color: var(--color-error);
+}
+
 .page-title {
   margin: 0 0 0.25rem;
   font-size: 2rem;
@@ -97,7 +129,8 @@ body {
   color: var(--color-text-muted);
 }
 
-.filter-select {
+.filter-select,
+.filter-search {
   font: inherit;
   font-size: 0.9rem;
   padding: 0.4rem 0.7rem;
@@ -105,6 +138,52 @@ body {
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+.filter-search {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.filter-search:focus,
+.filter-select:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.pagination-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-summary {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
 }
 
 /* Status / loading / error */
@@ -131,7 +210,7 @@ body {
   gap: 2rem;
 }
 
-.target-group {
+.nanobar-type-group {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -139,7 +218,7 @@ body {
   overflow: hidden;
 }
 
-.target-group-header {
+.nanobar-type-group-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -149,7 +228,7 @@ body {
   background: var(--color-bg);
 }
 
-.target-group-title {
+.nanobar-type-group-title {
   margin: 0;
   font-size: 1rem;
   font-weight: 700;
@@ -158,7 +237,7 @@ body {
   color: var(--color-text);
 }
 
-.target-group-count {
+.nanobar-type-group-count {
   flex-shrink: 0;
   font-size: 0.8rem;
   font-weight: 600;
@@ -205,15 +284,6 @@ body {
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--color-text);
-}
-
-.nanobar-track-type {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-  border-radius: 999px;
-  padding: 0.1rem 0.55rem;
 }
 
 .nanobar-label {

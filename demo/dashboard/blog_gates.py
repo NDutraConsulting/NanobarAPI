@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from starlette.requests import Request
-
 from dataclasses import dataclass
+
+from starlette.requests import Request
 
 from nanobar_api.validation import parse
 from nanobar_api.validator_gate import NanobarValidatorGate
