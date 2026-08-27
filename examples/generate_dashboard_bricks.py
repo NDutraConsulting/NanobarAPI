@@ -4,7 +4,7 @@
 `/admin/app/*` mutating request (create/edit a post, book an appointment, mark a notification
 read) -- see `app/controllers/blog_controller.py` -- writing onto the `"snapshot"` channel of
 the same `EventQueueRepository` `app/main.py`'s `eventbus_lifespan` drains into
-`demo/data/events.db`. `app/admin/nanobar/generate_bricks.py`'s
+`app/db/events.db`. `app/admin/nanobar/generate_bricks.py`'s
 `generate_dashboard_bricks()` (the actual implementation, shared with the dashboard's own
 "Generate bricks" button) turns those captured events into bricks and binds them to nanobars,
 on demand.
@@ -12,12 +12,12 @@ on demand.
 Unlike `seed_kahnban_bricks.py` (which drives synthetic traffic through a *different* demo app
 and generates the events from scratch), this script generates no traffic of its own -- it only
 processes capture events the live dashboard app already wrote. Reads/writes the exact same
-`demo/data/events.db` / `demo/data/regression_bricks.db` files `app/main.py` uses by
+`app/db/events.db` / `app/admin/nanobar/data/regression_bricks.db` files `app/main.py` uses by
 default (respects `NANOBAR_EVENTS_DB`/`NANOBAR_REGRESSION_BRICKS_DB` overrides the same way).
 
 Run from this repo's root:
 
-    uv run python demo/generate_dashboard_bricks.py
+    uv run python examples/generate_dashboard_bricks.py
 
 Or, equivalently, click "Generate bricks" on the nanobars list page in a running dashboard.
 """

@@ -6,13 +6,12 @@ import os
 import sqlite3
 from pathlib import Path
 
-from app.core.config import DATA_DIR
 from nanobar_api.bricks.store import connect
 
-#: Default location, matching the seed script's own output path
-#: (``demo/data/regression_bricks.db``). ``demo/data/`` is gitignored and populated by a
-#: separate seed script; it may not exist yet or may be empty, and that's fine.
-DEFAULT_DB_PATH = DATA_DIR / "regression_bricks.db"
+#: Default location: `app/admin/nanobar/data/regression_bricks.db`, alongside the code that
+#: owns it -- gitignored and also populated by a separate seed script; it may not exist yet or
+#: may be empty, and that's fine.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "regression_bricks.db"
 
 #: Environment variable used to override DEFAULT_DB_PATH (e.g. to point at a fixture in
 #: tests, or a different environment's database).

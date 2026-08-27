@@ -7,11 +7,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app.core.config import DATA_DIR
-
-#: Default location, matching every other per-app database's own convention
-#: (``demo/data/*.db``). ``demo/data/`` is gitignored.
-DEFAULT_DB_PATH = DATA_DIR / "app_admin.db"
+#: Default location: `app/admin/app/data/app_admin.db`, alongside the code that owns it --
+#: gitignored.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "app_admin.db"
 
 #: Environment variable used to override DEFAULT_DB_PATH.
 DB_PATH_ENV_VAR = "NANOBAR_APP_ADMIN_DB"

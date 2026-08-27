@@ -56,7 +56,7 @@ def build_app(
 
     `db_path` is the regression-bricks SQLite database to read/write. When omitted, it's
     resolved from the `NANOBAR_REGRESSION_BRICKS_DB` environment variable (falling back to
-    `demo/data/regression_bricks.db`) — see `app.admin.nanobar.db.resolve_db_path`.
+    `app/admin/nanobar/data/regression_bricks.db`) — see `app.admin.nanobar.db.resolve_db_path`.
 
     `events_db_path` is the eventbus SQLite database (trace/span data) to read *and now write*
     — this app instruments itself: `EventBusTraceMiddleware` gives every dashboard HTTP request
@@ -67,7 +67,7 @@ def build_app(
     default) since this app is a dev/observability tool, not a production service -- `app.state.
     trace_capture_toggle` (a `SQLiteTraceCaptureToggle` durably stored in `nanobar_admin_db_path`)
     is the actual runtime on/off switch, controlled from `/admin/nanobar/dashboard/settings`.
-    When omitted, resolved from `NANOBAR_EVENTS_DB` (falling back to `demo/data/events.db`) —
+    When omitted, resolved from `NANOBAR_EVENTS_DB` (falling back to `app/db/events.db`) —
     see `app.admin.nanobar.events_db.resolve_db_path`. Its repository now also carries
     `"snapshot"` (the blog domain's real `NanobarValidatorGate`/`NanobarController`/
     `NanobarService` pipeline calls `capture_layer()`, whose default channel is `"snapshot"` —
@@ -87,7 +87,7 @@ def build_app(
     are further isolated by cookie path (`/admin/app` vs `/admin/nanobar`) so being logged into
     one never disturbs the other -- see `nanobar_api.admin_auth.CSRFMiddleware`'s docstring.
     When omitted, resolved from `NANOBAR_APP_ADMIN_DB`/`NANOBAR_ADMIN_DB` respectively (falling
-    back to `demo/data/app_admin.db`/`demo/data/nanobar_admin.db`) — see
+    back to `app/admin/app/data/app_admin.db`/`app/admin/nanobar/data/nanobar_admin.db`) — see
     `app.admin.app.auth_db.resolve_db_path`/
     `app.admin.nanobar.auth_db.resolve_db_path`.
 
@@ -95,13 +95,13 @@ def build_app(
     accessed through real SQLAlchemy ORM models (`app.models.blog_model`) via
     `NanobarRepository` (`app.crud.blog_crud`) — this domain's first real usage
     anywhere in the codebase. When omitted, resolved from `NANOBAR_BLOG_DB` (falling back to
-    `demo/data/blog.db`) — see `app.db.blog_session.resolve_db_path`.
+    `app/db/blog.db`) — see `app.db.blog_session.resolve_db_path`.
 
     `nanobar_type_system_db_path` is the dynamic (runtime-writable) nanobar-type-system SQLite
     database (`nanobar_api/dynamic_taxonomy.py`) -- per-`(key, key_name)` coverage rules (e.g.
     one entry per worker channel) the static, checked-in `nanobar.types.lock` file can't hold.
     When omitted, resolved from `NANOBAR_TYPE_SYSTEM_DB` (falling back to
-    `demo/data/nanobar_type_system.db`) — see
+    `app/admin/nanobar/data/nanobar_type_system.db`) — see
     `app.admin.nanobar.dynamic_taxonomy_db.resolve_db_path`.
 
     `route_manifest_path` is where `nanobar_api.route_manifest.write_route_manifest` writes
@@ -112,7 +112,7 @@ def build_app(
     (`generate_bricks_action`), record their outcome to `app.state.refresh_log` (a
     `SQLiteRefreshLog`, stored in `nanobar_admin_db_path`), shown on
     `/admin/nanobar/dashboard/settings`. When omitted, resolved from
-    `NANOBAR_API_ROUTES_MANIFEST` (falling back to `demo/data/nanobar.api-routes.json`) — see
+    `NANOBAR_API_ROUTES_MANIFEST` (falling back to `app/nanobar.api-routes.json`) — see
     `app.core.config.resolve_route_manifest_path`.
 
     Passing any of these explicitly is how tests point the app at temp databases without

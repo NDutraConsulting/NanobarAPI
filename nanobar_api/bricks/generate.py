@@ -1,4 +1,5 @@
-"""Brick generation — turns unprocessed `"snapshot"` channel events into `RegressionBrick`s.
+"""Brick generation — identifies unprocessed, captured event-spans on the `"snapshot"` channel
+and generates a `RegressionBrick` for each.
 
 Per the regression-brick system plan (`.focusari/regression-brick-system-plan.md` §6,
 "Contract Source & Brick Generation"), this is an **explicit batch/CI step**, not a
@@ -124,10 +125,11 @@ def generate_bricks(
     capture_policy_id: str | None = "default-v1",
     limit: int = 100,
 ) -> list[RegressionBrick]:
-    """Turn up to `limit` unprocessed events on `channel` into `RegressionBrick`s.
+    """Identifies up to `limit` unprocessed, captured event-spans on `channel` and generates a
+    `RegressionBrick` for each.
 
     Returns only the newly-inserted bricks (not ones skipped as duplicates of an
-    already-stored `content_hash` — the caller wants to know what's new). Every event this
+    already-stored `content_hash` — the caller wants to know what's new). Every event-span this
     call attempts, whether it produces a new brick, is deduped, or fails to parse, is marked
     processed in `events_conn` at the end, so a second call never reprocesses it.
     """

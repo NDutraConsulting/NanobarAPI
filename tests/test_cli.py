@@ -53,8 +53,8 @@ def test_dev_respects_custom_app_name_host_and_port(monkeypatch: pytest.MonkeyPa
     assert kwargs["port"] == 9000
 
 
-def test_dev_defaults_to_app_py_in_cwd_when_path_omitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (tmp_path / "app.py").write_text("app = object()\n")
+def test_dev_defaults_to_server_py_in_cwd_when_path_omitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "server.py").write_text("app = object()\n")
     monkeypatch.chdir(tmp_path)
     fake = _FakeUvicorn()
     monkeypatch.setattr("uvicorn.run", fake.run)
@@ -63,11 +63,11 @@ def test_dev_defaults_to_app_py_in_cwd_when_path_omitted(monkeypatch: pytest.Mon
 
     assert len(fake.calls) == 1
     import_string, kwargs = fake.calls[0]
-    assert import_string == "app:app"
+    assert import_string == "server:app"
     assert kwargs["app_dir"] == str(tmp_path)
 
 
-def test_dev_errors_when_path_omitted_and_no_default_app_py(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_dev_errors_when_path_omitted_and_no_default_server_py(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     fake = _FakeUvicorn()
     monkeypatch.setattr("uvicorn.run", fake.run)

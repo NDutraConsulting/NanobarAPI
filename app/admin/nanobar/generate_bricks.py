@@ -1,6 +1,7 @@
-"""Shared "drain events.db's snapshot channel -> bricks -> nanobars" logic.
+"""Shared "identify captured event-spans on events.db's snapshot channel, generate their
+regression-bricks, bind to nanobars" logic.
 
-Used by both `demo/generate_dashboard_bricks.py` (terminal/CI entry point) and the dashboard's
+Used by both `examples/generate_dashboard_bricks.py` (terminal/CI entry point) and the dashboard's
 own "Generate bricks" button (`admin/nanobar/api.py`'s `generate_bricks_action`) -- exactly one
 implementation, not a duplicate, of what used to live only in the script.
 
@@ -28,13 +29,13 @@ SYSTEM_VERSION = "0.1.0"
 CREATED_BY = "generate_dashboard_bricks"
 
 #: generate_bricks()'s own default (100) processes one batch per call -- a live dashboard can
-#: accumulate thousands of unprocessed snapshot events (mostly route_key-less ORM captures from
-#: plain read handlers) between runs, so draining in a single call would silently leave most of
-#: the backlog unprocessed. _drain_all_snapshot_events loops batches instead.
+#: accumulate thousands of unprocessed snapshot event-spans (mostly route_key-less ORM captures
+#: from plain read handlers) between runs, so processing a single batch would silently leave most
+#: of the backlog unidentified. _generate_bricks_for_all_captured_spans loops batches instead.
 _BATCH_SIZE = 500
 
 
-def _drain_all_snapshot_events(
+def _generate_bricks_for_all_captured_spans(
     events_conn: sqlite3.Connection, bricks_conn: sqlite3.Connection
 ) -> list[RegressionBrick]:
     all_new_bricks: list[RegressionBrick] = []
@@ -65,10 +66,11 @@ def generate_dashboard_bricks(
     *,
     route_manifest_entries: list[RouteManifestEntry] | None = None,
 ) -> GenerateBricksResult:
-    """Drains `events_conn`'s `"snapshot"` channel into `bricks_conn`, binds new bricks to
-    nanobars. The caller owns both connections (opens and closes them) -- this never opens one
-    itself, so it works identically called from a one-off script's short-lived connections or a
-    request handler's already-open per-request ones.
+    """Identifies captured event-spans on `events_conn`'s `"snapshot"` channel, generates their
+    `bricks_conn` regression-bricks, and binds new bricks to nanobars. The caller owns both
+    connections (opens and closes them) -- this never opens one itself, so it works identically
+    called from a one-off script's short-lived connections or a request handler's already-open
+    per-request ones.
 
     Safe to call repeatedly: `generate_bricks()` dedupes already-processed events and
     already-seen content-hashes; `bind_new_bricks_to_nanobars()` reuses an existing Nanobar for
@@ -79,7 +81,7 @@ def generate_dashboard_bricks(
     start, instead of relying entirely on a later "Nanobar refresh" pass
     (`admin/nanobar/nanobar_refresh.py`) to backfill it.
     """
-    new_bricks = _drain_all_snapshot_events(events_conn, bricks_conn)
+    new_bricks = _generate_bricks_for_all_captured_spans(events_conn, bricks_conn)
     route_key_domains = (
         {entry.route_key: entry.domain for entry in route_manifest_entries} if route_manifest_entries else None
     )

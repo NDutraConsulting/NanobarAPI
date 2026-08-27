@@ -15,6 +15,9 @@ venv*/
 build/
 dist/
 
-demo/data/
+app/admin/app/data/
+app/admin/nanobar/data/
+app/db/*.db
+app/nanobar.api-routes.json
 app/pages/node_modules/
 

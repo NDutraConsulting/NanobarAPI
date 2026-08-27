@@ -546,11 +546,14 @@ def test_api_list_nanobars_invalid_page_is_rejected(client: TestClient) -> None:
     assert response.json()["status"] == "error"
 
 
-def test_api_generate_bricks_action_drains_captured_snapshot_events(events_db_path: str, client: TestClient) -> None:
+def test_api_generate_bricks_action_identifies_captured_snapshot_event_spans(
+    events_db_path: str, client: TestClient
+) -> None:
     """Same shape `capture_layer()` writes onto the "snapshot" channel for a real controller-
     layer call -- inserted directly, standing in for a real `/admin/app/*` request, so this
-    test doesn't need to drive the full blog domain just to prove the route drains events.db
-    into regression_bricks.db the same way `demo/generate_dashboard_bricks.py` does.
+    test doesn't need to drive the full blog domain just to prove the route identifies the
+    captured event-span in events.db and generates its brick in regression_bricks.db, the same
+    way `examples/generate_dashboard_bricks.py` does.
     """
     conn = events_connect(events_db_path)
     try:
@@ -785,6 +788,56 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
         assert Path(shadow_blog_db_path).exists()
         real_posts = test_client.get("/admin/app/api/posts").json()["result"]["data"]
         assert len(real_posts) == 1  # only the original create, not a second one from the replay
+
+
+def test_api_replay_brick_action_honors_a_shadow_db_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same end-to-end shape as `test_api_replay_brick_action_end_to_end`, but with
+    `NANOBAR_BLOG_SHADOW_DB` set -- proves `ShadowPersistenceProfile`'s env var override actually
+    redirects the replay's write, not just that `resolve_shadow_connection()` returns the right
+    string in isolation (see `tests/test_bricks_shadow_profile.py` for that unit-level proof)."""
+    override_shadow_db_path = str(tmp_path / "custom_shadow.db")
+    default_shadow_db_path = str(tmp_path / "blog_shadow.db")
+    monkeypatch.setenv("NANOBAR_BLOG_SHADOW_DB", override_shadow_db_path)
+
+    app = build_app(
+        db_path=str(tmp_path / "regression_bricks.db"),
+        events_db_path=str(tmp_path / "events.db"),
+        app_admin_db_path=str(tmp_path / "app_admin.db"),
+        nanobar_admin_db_path=str(tmp_path / "nanobar_admin.db"),
+        blog_db_path=str(tmp_path / "blog.db"),
+        route_manifest_path=str(tmp_path / "nanobar.api-routes.json"),
+    )
+    with TestClient(app) as test_client:
+        _authenticate(test_client, login_path=NANOBAR_LOGIN_PATH)
+        app_csrf_token = _authenticate(test_client, login_path=APP_LOGIN_PATH, set_default_header=False)
+
+        created = test_client.post(
+            "/admin/app/api/posts",
+            json={"title": "Hello", "body": "World"},
+            headers={"x-nanobar-csrf-token": app_csrf_token},
+        )
+        assert created.status_code == 200
+
+        for _ in range(50):
+            generated = test_client.post("/admin/nanobar/api/generate-bricks")
+            if generated.json()["result"]["data"]["new_bricks"] > 0:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("captured events never reached events.db")
+
+        nanobars = test_client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
+        controller_nanobar = next(n for n in nanobars if n["nanobar_type"] == "controller-request-response")
+        bricks = test_client.get(f"/admin/nanobar/api/nanobars/{controller_nanobar['nanobar_id']}/bricks").json()[
+            "result"
+        ]["data"]
+        brick = next(b for b in bricks if b["source"].get("route_key") == "POST /admin/app/api/posts")
+
+        response = test_client.post(f"/admin/nanobar/api/bricks/{brick['regression_brick_id']}/replay")
+
+        assert response.status_code == 200
+        assert Path(override_shadow_db_path).exists()
+        assert not Path(default_shadow_db_path).exists()
 
 
 def test_api_replay_brick_action_not_found(client: TestClient) -> None:
@@ -1903,8 +1956,8 @@ def test_build_app_writes_the_route_manifest_on_launch(route_manifest_path: str,
 
 
 def test_dashboard_app_handles_not_yet_existing_database_directory(tmp_path: Path) -> None:
-    """The db path's parent directory doesn't exist yet (mirrors demo/data/ before the seed
-    script has ever run) — the app must still respond, not crash.
+    """The db path's parent directory doesn't exist yet (mirrors a domain's data/ directory
+    before the seed script has ever run) — the app must still respond, not crash.
     """
     nested_db_path = str(tmp_path / "not-yet-created" / "regression_bricks.db")
     app = build_app(db_path=nested_db_path)

@@ -8,8 +8,9 @@ different `channel` for every app, and different channels can genuinely warrant 
 expected-scenario coverage rules (a `"domain.appointments"` worker's failure modes aren't
 necessarily a `"domain.orders"` worker's) -- a static lock file can't grow to cover that without
 a code change and a release. This module is the dynamic layer instead: a dedicated,
-per-application SQLite database (`admin/nanobar/dynamic_taxonomy_db.py` resolves its path, the
-same `demo/data/*.db` convention every other per-app database here already follows) that a
+per-application SQLite database (`app/admin/nanobar/dynamic_taxonomy_db.py` resolves its path,
+the same domain-local `data/*.db` convention every other per-app database here already follows)
+that a
 running app can register new `(key, key_name)` entries into as it actually encounters them --
 `get_or_create_entry()` mirrors `bricks/binding.py`'s `get_or_create_nanobar_by_route_key()`
 exactly, down to the `BEGIN IMMEDIATE` atomic-claim discipline, for the same reason: two

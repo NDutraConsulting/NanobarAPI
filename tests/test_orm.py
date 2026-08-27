@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 from nanobar_api.middleware.trace import current_route_key
-from nanobar_api.orm import NanobarORMWrapper
+from nanobar_api.orm import NanobarORMWrapper, build_engine_url
 
 
 def _repository() -> EventQueueRepository:
@@ -106,3 +106,11 @@ def test_failed_query_captures_error_brick_classified_by_exception_type() -> Non
     assert len(error_events) == 1
     assert error_events[0].payload["response"]["error_type"] == "IntegrityError"
     assert error_events[0].payload["request"]["statement"] == "INSERT INTO t VALUES (1)"
+
+
+def test_build_engine_url_wraps_a_bare_path_as_sqlite() -> None:
+    assert build_engine_url("/tmp/blog.db") == "sqlite:////tmp/blog.db"
+
+
+def test_build_engine_url_passes_through_an_existing_url_unchanged() -> None:
+    assert build_engine_url("postgresql://user:pass@host/db") == "postgresql://user:pass@host/db"

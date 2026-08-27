@@ -22,7 +22,7 @@ correlating bricks by shared `trace_id`. Neither is what this module does, for r
 
 So: binding here is a batch step (same "explicit, human-reviewable, run after `generate_bricks()`"
 shape), keyed by the direct `(nanobar_type, route_key)` pair already stamped on the brick, using
-`match_method="exact"` — matching `demo/seed_kahnban_bricks.py`'s own manual binding, just
+`match_method="exact"` — matching `examples/seed_kahnban_bricks.py`'s own manual binding, just
 automatic. A real `"trace"`-based matcher, for boundaries without a natural route key (e.g. an
 event-to-subscriber capture), remains unbuilt — this covers the REST validator/controller case
 this session actually built, not the fully general one the checklist named.
@@ -100,7 +100,7 @@ def get_or_create_nanobar_by_route_key(
     codebase) isn't available here — there's no unique index on `(nanobar_type, route_key)` to
     conflict against, since `route_key` lives inside a JSON list column, not a scalar one.
 
-    Placeholder metadata for a newly-created row matches `demo/seed_kahnban_bricks.py`'s own
+    Placeholder metadata for a newly-created row matches `examples/seed_kahnban_bricks.py`'s own
     established convention exactly, not a new guess: `regression_weight=0.5`,
     `endpoint_scenario_frequency={"state": "unmeasured"}`, `request_object_id`/
     `response_object_id` derived as `f"req-{route_key}"`/`f"res-{route_key}"`.

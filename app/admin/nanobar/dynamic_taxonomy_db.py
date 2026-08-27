@@ -11,13 +11,11 @@ import os
 import sqlite3
 from pathlib import Path
 
-from app.core.config import DATA_DIR
 from nanobar_api.dynamic_taxonomy import connect
 
-#: Default location, matching every other per-app database's own convention
-#: (``demo/data/regression_bricks.db``, ``demo/data/events.db``, ...). ``demo/data/`` is
-#: gitignored; it may not exist yet or may be empty, and that's fine.
-DEFAULT_DB_PATH = DATA_DIR / "nanobar_type_system.db"
+#: Default location: `app/admin/nanobar/data/nanobar_type_system.db`, alongside the code that
+#: owns it -- gitignored; it may not exist yet or may be empty, and that's fine.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "nanobar_type_system.db"
 
 #: Environment variable used to override DEFAULT_DB_PATH (e.g. to point at a fixture in
 #: tests, or a different environment's database).

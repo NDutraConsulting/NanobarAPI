@@ -6,7 +6,7 @@
 `.focusari/regression-brick-system-plan.md` §5 describes (explicitly marked "design only, not
 built" there, and sized for a distributed production setting) -- this is the smallest local
 mechanism that gets this plan's actual requirement: **a replay must never write into the real
-`demo/data/blog.db`**. A bound brick can come from a mutating admin route (create/update a
+`app/db/blog.db`**. A bound brick can come from a mutating admin route (create/update a
 post, book an appointment, mark a notification read); replaying it against the live app's own
 `blog_session_factory` would create/mutate real rows on every click of "Run".
 
@@ -14,9 +14,12 @@ The shadow app shares the live app's `regression_bricks.db`/`events.db`/`app_adm
 `nanobar_admin.db` unchanged -- there's only one `regression_bricks.db` for bricks to live in,
 and a replay's own trace/span activity must land in the *same* `events.db` the operator is
 already browsing, or the Run tab's "Refresh" button would have nothing to fetch. Only
-`blog_db_path` is rerouted, to a sibling file (`blog.db` -> `blog_shadow.db`) -- same shape as
-every other `demo/data/*.db` file: gitignored, persists across replays (accumulates like any
-other demo data), safe to delete to reset it.
+`blog_db_path` is rerouted, via `BLOG_SHADOW_PROFILE`
+(`nanobar_api.bricks.shadow_profile.ShadowPersistenceProfile`) -- by default a sibling file
+(`blog.db` -> `blog_shadow.db`), same shape as every other domain-owned `*.db` file: gitignored,
+persists across replays (accumulates like any other demo data), safe to delete to reset it. Set
+`NANOBAR_BLOG_SHADOW_DB` to redirect it elsewhere, including a genuine remote database, per that
+module's docstring.
 
 **Scoped down further, honestly:** this app's ASGI lifespan is never entered (no `with
 TestClient(app):`), so its background threads (the domain event bus, the scheduled-post
@@ -30,16 +33,17 @@ glossed over.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from nanobar_api import NanobarAPI
+from nanobar_api.bricks.shadow_profile import ShadowPersistenceProfile, resolve_shadow_connection
 
 _replay_apps: dict[tuple[str, str, str, str, str], NanobarAPI] = {}
 
-
-def _shadow_blog_db_path(blog_db_path: str) -> str:
-    path = Path(blog_db_path)
-    return str(path.with_name(f"{path.stem}_shadow{path.suffix}"))
+#: This slice only shadows `blog_db_path` -- see the module docstring for why the other four db
+#: paths stay shared with the live app unchanged. `profile_id` is a descriptive/audit label only
+#: today; see `ShadowPersistenceProfile`'s own docstring.
+BLOG_SHADOW_PROFILE = ShadowPersistenceProfile(
+    profile_id="postprod-sqlite", connection_secret_ref="NANOBAR_BLOG_SHADOW_DB"
+)
 
 
 def get_replay_app(
@@ -65,7 +69,7 @@ def get_replay_app(
             events_db_path=events_db_path,
             app_admin_db_path=app_admin_db_path,
             nanobar_admin_db_path=nanobar_admin_db_path,
-            blog_db_path=_shadow_blog_db_path(blog_db_path),
+            blog_db_path=resolve_shadow_connection(blog_db_path, profile=BLOG_SHADOW_PROFILE),
         )
         _replay_apps[key] = app
     return app

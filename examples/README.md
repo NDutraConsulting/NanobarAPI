@@ -1,7 +1,11 @@
-# demo/
+# examples/
 
 Demo/seed tooling for NanobarAPI. Nothing here is part of the installed `nanobar_api`
-package or its test suite — this is example/dev tooling only.
+package or its test suite — this is example/dev tooling only. Runtime data (gitignored
+SQLite/JSON files these scripts and the dashboard app read/write) lives alongside the domain
+code that owns it under `app/` -- `app/db/*.db` (cross-domain: blog, events, kahnban),
+`app/admin/app/data/app_admin.db`, `app/admin/nanobar/data/*.db` -- not in one shared
+directory. Only the example/seed *scripts* live here.
 
 ## seed_kahnban_bricks.py
 
@@ -14,21 +18,21 @@ what it captured.
 Run from this repo's root:
 
 ```sh
-uv run python demo/seed_kahnban_bricks.py
+uv run python examples/seed_kahnban_bricks.py
 ```
 
-It creates three persistent (not temp-dir) SQLite databases under `demo/data/`
-(gitignored):
+It creates three persistent (not temp-dir) SQLite databases (gitignored):
 
-- `demo/data/kahnban.db` — kahnban's own data (boards/lists/cards created by the seeded
+- `app/db/kahnban.db` — kahnban's own data (boards/lists/cards created by the seeded
   traffic), pointed there via `focusari_kahnban.db.configure()` so this script never
   touches kahnban's own dev database.
-- `demo/data/events.db` — the raw captured request/response snapshot events.
-- `demo/data/regression_bricks.db` — the generated `RegressionBrick`s, plus the
+- `app/db/events.db` — the raw captured request/response snapshot events.
+- `app/admin/nanobar/data/regression_bricks.db` — the generated `RegressionBrick`s, plus the
   `Nanobar`s and `nanobar_regression_bricks` bindings created from them. This is also
   what [the dashboard app](../app/main.py) reads by default.
 
-All three are real files you can open afterward, e.g. `sqlite3 demo/data/regression_bricks.db`.
+All three are real files you can open afterward, e.g.
+`sqlite3 app/admin/nanobar/data/regression_bricks.db`.
 
 The traffic driven covers 2 boards, 2-3 lists per board, 5 cards spread across lists, an
 in-list reorder (position-race territory), a cross-board move *attempt* (kahnban's own
@@ -79,7 +83,8 @@ repositories, models]`:
   (public, `admin/app`, and `admin/nanobar` alike, in one flat directory today -- see that
   plan doc's noted deviation from a fully per-surface-nested `pages/` tree).
 - **[`app/core/config.py`](../app/core/config.py)** — cross-cutting path configuration
-  (`DATA_DIR`, `WEB_DIR`, the route-manifest path resolver).
+  (`WEB_DIR`, the route-manifest path resolver). Per-domain database paths are resolved
+  locally by each domain's own `*_db.py`/`auth_db.py`/`blog_session.py`, not centralized here.
 
 `app/main.py` is the composition root wiring everything together; `server.py` (at the repo
 root, outside `app/`) is the `nanobar dev`/`uvicorn` entrypoint (kept separate from
@@ -146,16 +151,21 @@ credential-rotation flow exists). The public blog (`/`, `/posts/{id}`,
 
 ### Data
 
-Seven files under `demo/data/` (gitignored), each with its own env-var override — see
-`build_app()`'s docstring in `app/main.py` for the exact variable names and
-defaults: `regression_bricks.db`, `events.db` (traces/spans — this app instruments its own
-requests), `app_admin.db` (the blog/booking admin's own sessions + admin users),
-`nanobar_admin.db` (the nanobar-admin's own sessions + admin users, plus the trace-capture
-toggle and the refresh log below), `blog.db` (posts/appointments/notifications),
-`nanobar_type_system.db` (the runtime-writable half of the `nanobar_type` taxonomy —
-per-`(key, key_name)` coverage rules, e.g. one entry per worker channel, that the static
-checked-in `nanobar_api/nanobar.types.lock` can't hold; see that module's own docstring),
-and `nanobar.api-routes.json` (below).
+Seven files, each domain-local to the code that owns it (gitignored) rather than in one shared
+directory, each with its own env-var override — see `build_app()`'s docstring in `app/main.py`
+for the exact variable names and defaults:
+
+- `app/admin/nanobar/data/regression_bricks.db`
+- `app/db/events.db` (traces/spans — this app instruments its own requests)
+- `app/admin/app/data/app_admin.db` (the blog/booking admin's own sessions + admin users)
+- `app/admin/nanobar/data/nanobar_admin.db` (the nanobar-admin's own sessions + admin users,
+  plus the trace-capture toggle and the refresh log below)
+- `app/db/blog.db` (posts/appointments/notifications)
+- `app/admin/nanobar/data/nanobar_type_system.db` (the runtime-writable half of the
+  `nanobar_type` taxonomy — per-`(key, key_name)` coverage rules, e.g. one entry per worker
+  channel, that the static checked-in `nanobar_api/nanobar.types.lock` can't hold; see that
+  module's own docstring)
+- `app/nanobar.api-routes.json` (below)
 
 ### Refresh cycles
 
@@ -163,7 +173,7 @@ Three independent, on-demand actions, each with its own button (and "last run" s
 `/admin/nanobar/dashboard/settings`, plus its own equivalent from a terminal:
 
 - **API routes** — statically scans the app's live route tree and (re)writes
-  `demo/data/nanobar.api-routes.json` (a `{domain, method, path, route_key}` entry per
+  `app/nanobar.api-routes.json` (a `{domain, method, path, route_key}` entry per
   route — see `nanobar_api/route_manifest.py`). Runs automatically on every launch already
   ("built on launch"); the button just re-runs it without restarting. From a terminal, this
   is the general framework CLI, not a demo-specific script:
@@ -186,7 +196,7 @@ Three independent, on-demand actions, each with its own button (and "last run" s
   its own):
 
   ```sh
-  uv run python demo/generate_dashboard_bricks.py
+  uv run python examples/generate_dashboard_bricks.py
   ```
 
   Or click **"Generate bricks"** on the nanobar dashboard (also on the Settings page, as

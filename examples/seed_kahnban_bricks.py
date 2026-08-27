@@ -7,9 +7,9 @@ Pipeline exercised, end to end:
         -> wrapped in SnapshotMiddleware (nanobar_api.middleware.snapshot)
         -> EventQueueRepository "snapshot" channel
         -> eventbus_lifespan's background EventThread
-        -> demo/data/events.db
+        -> app/db/events.db
         -> generate_bricks()
-        -> demo/data/regression_bricks.db (RegressionBricks + Nanobars + bindings)
+        -> app/admin/nanobar/data/regression_bricks.db (RegressionBricks + Nanobars + bindings)
 
 focusari_kahnban is a real, already-tested app built on focusari_asgi (not this
 project's Starlette base) — used purely as a realistic source of varied HTTP traffic.
@@ -36,7 +36,7 @@ Idempotency across repeated runs, honestly stated:
 
 Run from the nanobar_api repo root with:
 
-    uv run python demo/seed_kahnban_bricks.py
+    uv run python examples/seed_kahnban_bricks.py
 """
 
 from __future__ import annotations
@@ -60,10 +60,13 @@ from nanobar_api.eventbus.store import connect as events_connect
 from nanobar_api.middleware.snapshot import SnapshotMiddleware
 from nanobar_api.middleware.trace import EventBusTraceMiddleware, configure_tracing
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-KAHNBAN_DB_PATH = DATA_DIR / "kahnban.db"
-EVENTS_DB_PATH = DATA_DIR / "events.db"
-BRICKS_DB_PATH = DATA_DIR / "regression_bricks.db"
+#: examples/ is a repo-root sibling of app/ -- runtime data lives alongside the domain code
+#: that owns it, not in one shared directory: kahnban.db/events.db are cross-domain data under
+#: app/db/, regression_bricks.db is nanobar-admin's own (app/admin/nanobar/data/).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+KAHNBAN_DB_PATH = _REPO_ROOT / "app" / "db" / "kahnban.db"
+EVENTS_DB_PATH = _REPO_ROOT / "app" / "db" / "events.db"
+BRICKS_DB_PATH = _REPO_ROOT / "app" / "admin" / "nanobar" / "data" / "regression_bricks.db"
 
 #: focusari_kahnban's own pyproject.toml [project].version, kept in sync by hand since
 #: there's no installed-package metadata lookup wired up here.
@@ -339,7 +342,8 @@ async def _capture_traffic() -> int:
 
 
 def main() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for path in (KAHNBAN_DB_PATH, EVENTS_DB_PATH, BRICKS_DB_PATH):
+        path.parent.mkdir(parents=True, exist_ok=True)
     # Reopening these files across runs is intentional and safe: events.db/regression_bricks.db's
     # own connect() functions create their schema idempotently (CREATE TABLE IF NOT EXISTS), and
     # kahnban's own init_db() (run in its lifespan) is likewise idempotent. See this module's

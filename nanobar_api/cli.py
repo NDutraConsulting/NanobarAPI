@@ -7,8 +7,10 @@ from pathlib import Path
 from types import ModuleType
 
 #: Matches `fastapi dev`'s default-to-`main.py` convention, using this project's own
-#: established default entrypoint name (`app.py`, already the root demo file) instead.
-DEFAULT_APP_FILE = Path("app.py")
+#: established default entrypoint name (`server.py`, already the root demo file) instead -- not
+#: `app.py`, which would be permanently shadowed by a sibling `app/` package (see `server.py`'s
+#: own docstring).
+DEFAULT_APP_FILE = Path("server.py")
 
 
 def _resolve_app_path(parser: argparse.ArgumentParser, path: Path | None) -> Path:

@@ -6,13 +6,12 @@ import os
 import sqlite3
 from pathlib import Path
 
-from app.core.config import DATA_DIR
 from nanobar_api.eventbus.store import connect
 
-#: Default location, matching the seed script's own output path (``demo/data/events.db``).
-#: ``demo/data/`` is gitignored and populated by a separate seed script; it may not exist yet
-#: or may be empty, and that's fine.
-DEFAULT_DB_PATH = DATA_DIR / "events.db"
+#: Default location: `app/db/events.db` -- cross-domain telemetry data (both the blog domain's
+#: own instrumentation and the nanobar-admin's trace/span capture write here), not nested under
+#: this package's own `data/` directory. Gitignored; may not exist yet or may be empty.
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "db" / "events.db"
 
 #: Environment variable used to override DEFAULT_DB_PATH (e.g. to point at a fixture in
 #: tests, or a different environment's database).

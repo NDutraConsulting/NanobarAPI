@@ -204,9 +204,10 @@ def _record_refresh(request: Request, kind: str, summary: str) -> None:
 
 
 async def generate_bricks_action(request: Request) -> JSONResponse:
-    """POST /api/generate-bricks -> drains events.db's "snapshot" channel into
-    regression_bricks.db (`generate_bricks()` + `bind_new_bricks_to_nanobars()`), the same
-    operation `demo/generate_dashboard_bricks.py` runs from a terminal -- exposed here as a
+    """POST /api/generate-bricks -> identifies captured event-spans on events.db's "snapshot"
+    channel and generates their regression_bricks.db bricks (`generate_bricks()` +
+    `bind_new_bricks_to_nanobars()`), the same operation
+    `examples/generate_dashboard_bricks.py` runs from a terminal -- exposed here as a
     dashboard button so it doesn't require dropping to a shell. Runs synchronously against real
     SQLite files; for this local-beta single-operator dashboard that's acceptable (the live run
     that motivated this feature: 2,276 events -> 18 bricks in well under a second). Recorded as

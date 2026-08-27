@@ -29,6 +29,20 @@ if TYPE_CHECKING:
 _installed_engines: weakref.WeakSet[Engine] = weakref.WeakSet()
 
 
+def build_engine_url(db_path_or_url: str) -> str:
+    """Normalizes a `resolve_db_path()`-style value into a real SQLAlchemy engine URL.
+
+    Every such resolver in this codebase returns a bare local file path by default, but a
+    `NANOBAR_*_DB`-style environment variable override (or a
+    `nanobar_api.bricks.shadow_profile.ShadowPersistenceProfile`'s `connection_secret_ref`) may
+    hold a full connection URL instead -- e.g. `postgresql://...` for a remote shadow-persistence
+    target. Anything containing `"://"` is assumed to already be a URL and passed through
+    unchanged; anything else is treated as a local SQLite file path, wrapped as `sqlite:///...`,
+    matching this project's pre-existing default behavior exactly.
+    """
+    return db_path_or_url if "://" in db_path_or_url else f"sqlite:///{db_path_or_url}"
+
+
 class NanobarORMWrapper:
     @staticmethod
     def install(engine: Engine, repository: EventQueueRepository) -> None:
