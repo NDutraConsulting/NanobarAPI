@@ -21,10 +21,10 @@ from nanobar_api.openapi import (
 from nanobar_api.routing import RouteHandler, adapt_handler
 
 #: Vendored shared design tokens + base reset meant to replace what every default page's own
-#: stylesheet (`demo/web/*/*.css`) otherwise duplicates verbatim — not a `NanobarRouteSet`/
+#: stylesheet (`app/pages/*/*.css`) otherwise duplicates verbatim — not a `NanobarRouteSet`/
 #: capture consumer, same "pure static file serving" shape as the swagger-ui mount above.
 #: See `nanobar_api/static/nanobar-ui-designsystem/design-system.css`'s own docstring for
-#: current adoption status across `demo/web/*`.
+#: current adoption status across `app/pages/*`.
 #: Mounted under `/nanobar-static/...`, matching `SWAGGER_STATIC_MOUNT` below, not `/static` —
 #: found via live verification: a demo app that (reasonably) mounts its own StaticFiles at
 #: `/static` shadows any `/static/...`-prefixed framework mount registered after it, since

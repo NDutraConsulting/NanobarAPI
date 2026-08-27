@@ -5,7 +5,7 @@ Per the regression-brick system plan (`.focusari/regression-brick-system-plan.md
 against a fresh `TestClient` of the given app, not against any real external/production
 system." No shadow-DB hydration yet (this slice is scoped to one read-only GET endpoint,
 which needs no mutating-state replay) -- but see
-`demo/dashboard/replay_app.py`/`nanobar-dashboard-search-and-replay-upgrade-plan.md` for a
+`admin/nanobar/replay_app.py`/`nanobar-dashboard-search-and-replay-upgrade-plan.md` for a
 scoped-down local approximation of that, built for the dashboard's own "Run" button.
 
 `starlette.testclient.TestClient` is itself synchronous — it drives its own event loop
@@ -35,7 +35,7 @@ def replay_brick(
     `request` is the raw HTTP shape (`{"method", "path", "headers", "payload", ...}`) —
     replayed as `method`/`path` directly, same as always. A `capture_layer()`-sourced brick
     (stamped `source["route_key"]`, e.g. everything this project's own dashboard binds — see
-    `demo/dashboard/blog_controllers.py`) has no such shape at all: its `request` *is* the
+    `app/controllers/blog_controller.py`) has no such shape at all: its `request` *is* the
     validated request dataclass's own fields (e.g. `{"title": ..., "body": ...}` for a
     `CreatePostRequest`) — exactly the JSON body a real client would POST, just not tagged
     with a method/path anywhere on it. `route_key` (`"METHOD /path"`, the same identity
@@ -48,7 +48,7 @@ def replay_brick(
     headers from ever being captured in the first place, so there is nothing sensitive in a
     brick's stored headers to withhold at replay time. `extra_headers`, when given, are
     merged in on top (e.g. a session cookie + CSRF header + `traceparent` a caller wants the
-    replayed request to carry — see `demo/dashboard/api.py`'s `replay_brick_action`).
+    replayed request to carry — see `admin/nanobar/api.py`'s `replay_brick_action`).
 
     Returns a dict shaped exactly like a brick's own `response`: `{"status_code": ...,
     "payload": ...}`, where `payload` is the parsed JSON body of the fresh response, or

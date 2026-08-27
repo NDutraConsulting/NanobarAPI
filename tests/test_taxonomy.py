@@ -262,7 +262,7 @@ def test_compute_regression_weight_unknown_nanobar_type_returns_unchanged() -> N
 
 
 def test_compute_regression_weight_resolves_replay_prefixed_type_to_the_original() -> None:
-    # A replay of a widget-request-response brick (demo/dashboard/api.py's Run tab tags its
+    # A replay of a widget-request-response brick (admin/nanobar/api.py's Run tab tags its
     # marker span "replay-{original nanobar_type}") is judged by the *original* type's own
     # expected scenarios, not left unresolved just because "replay-widget-request-response"
     # itself was never a literal taxonomy key.

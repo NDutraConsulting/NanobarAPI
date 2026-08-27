@@ -1,6 +1,6 @@
 """Minimal routing/validation/envelope example — run with `uv run nanobar dev demo/basics.py`.
 
-Not the default `nanobar dev` target (that's the root `app.py`, the Nanobar Dashboard) — this
+Not the default `nanobar dev` target (that's the root `server.py`, the Nanobar Dashboard) — this
 file exists purely to demonstrate the framework's core DX: `@app.get`/`@app.post`, dataclass
 request/response validation, and the success/error envelope, without any regression-brick or
 eventbus machinery involved.

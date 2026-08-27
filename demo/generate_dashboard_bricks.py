@@ -2,16 +2,17 @@
 
 `NanobarValidatorGate`/`NanobarController.handle()` already call `capture_layer()` for every
 `/admin/app/*` mutating request (create/edit a post, book an appointment, mark a notification
-read) -- see `demo/dashboard/blog_controllers.py` -- writing onto the `"snapshot"` channel of
-the same `EventQueueRepository` `demo/dashboard/app.py`'s `eventbus_lifespan` drains into
-`demo/data/events.db`. `demo/dashboard/generate_bricks.py`'s `generate_dashboard_bricks()`
-(the actual implementation, shared with the dashboard's own "Generate bricks" button) turns
-those captured events into bricks and binds them to nanobars, on demand.
+read) -- see `app/controllers/blog_controller.py` -- writing onto the `"snapshot"` channel of
+the same `EventQueueRepository` `app/main.py`'s `eventbus_lifespan` drains into
+`demo/data/events.db`. `app/admin/nanobar/generate_bricks.py`'s
+`generate_dashboard_bricks()` (the actual implementation, shared with the dashboard's own
+"Generate bricks" button) turns those captured events into bricks and binds them to nanobars,
+on demand.
 
 Unlike `seed_kahnban_bricks.py` (which drives synthetic traffic through a *different* demo app
 and generates the events from scratch), this script generates no traffic of its own -- it only
 processes capture events the live dashboard app already wrote. Reads/writes the exact same
-`demo/data/events.db` / `demo/data/regression_bricks.db` files `demo/dashboard/app.py` uses by
+`demo/data/events.db` / `demo/data/regression_bricks.db` files `app/main.py` uses by
 default (respects `NANOBAR_EVENTS_DB`/`NANOBAR_REGRESSION_BRICKS_DB` overrides the same way).
 
 Run from this repo's root:
@@ -23,10 +24,13 @@ Or, equivalently, click "Generate bricks" on the nanobars list page in a running
 
 from __future__ import annotations
 
-from demo.dashboard.db import get_connection as get_bricks_connection, resolve_db_path as resolve_bricks_db_path
-from demo.dashboard.events_db import get_connection as get_events_connection, resolve_db_path as resolve_events_db_path
-from demo.dashboard.generate_bricks import generate_dashboard_bricks
-from demo.dashboard.route_manifest_path import resolve_path as resolve_route_manifest_path
+from app.admin.nanobar.db import get_connection as get_bricks_connection, resolve_db_path as resolve_bricks_db_path
+from app.admin.nanobar.events_db import (
+    get_connection as get_events_connection,
+    resolve_db_path as resolve_events_db_path,
+)
+from app.admin.nanobar.generate_bricks import generate_dashboard_bricks
+from app.core.config import resolve_route_manifest_path
 from nanobar_api.route_manifest import load_route_manifest
 
 

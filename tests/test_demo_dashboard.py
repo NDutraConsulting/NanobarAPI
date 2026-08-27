@@ -7,18 +7,28 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from demo.dashboard.app import build_app
-from demo.dashboard.db import DB_PATH_ENV_VAR, DEFAULT_DB_PATH, resolve_db_path
-from demo.dashboard.events_db import (
+from app.admin.app.auth_db import (
+    DB_PATH_ENV_VAR as APP_ADMIN_DB_PATH_ENV_VAR,
+    DEFAULT_DB_PATH as APP_ADMIN_DEFAULT_DB_PATH,
+    resolve_db_path as resolve_app_admin_db_path,
+)
+from app.admin.nanobar.auth_db import (
+    DB_PATH_ENV_VAR as NANOBAR_ADMIN_DB_PATH_ENV_VAR,
+    DEFAULT_DB_PATH as NANOBAR_ADMIN_DEFAULT_DB_PATH,
+    resolve_db_path as resolve_nanobar_admin_db_path,
+)
+from app.admin.nanobar.db import DB_PATH_ENV_VAR, DEFAULT_DB_PATH, resolve_db_path
+from app.admin.nanobar.events_db import (
     DB_PATH_ENV_VAR as EVENTS_DB_PATH_ENV_VAR,
     DEFAULT_DB_PATH as EVENTS_DEFAULT_DB_PATH,
     resolve_db_path as resolve_events_db_path,
 )
-from demo.dashboard.route_manifest_path import (
-    DEFAULT_PATH as ROUTE_MANIFEST_DEFAULT_PATH,
-    PATH_ENV_VAR as ROUTE_MANIFEST_PATH_ENV_VAR,
-    resolve_path as resolve_route_manifest_path,
+from app.core.config import (
+    ROUTE_MANIFEST_DEFAULT_PATH,
+    ROUTE_MANIFEST_PATH_ENV_VAR,
+    resolve_route_manifest_path,
 )
+from app.main import build_app
 from nanobar_api.admin_auth import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 from nanobar_api.bricks.schema import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick
 from nanobar_api.bricks.store import bind_brick_to_nanobar, connect, insert_brick, insert_nanobar, set_review_status
@@ -127,20 +137,41 @@ def _make_span_event(
     )
 
 
-def _authenticate(test_client: TestClient) -> None:
-    """Drives the real `/admin/login` flow against `test_client` -- not a bypass, the actual
-    `GET` (issues session + CSRF cookies) then `POST` (verifies the username/password against
-    `SQLiteAdminUserStore`'s seeded `admin`/`changeme123` account, authenticates the session)
-    round trip. The CSRF token is set as a *default* header on the client (`httpx.Client.headers`
-    applies to every subsequent request), so callers' own POST/PATCH/DELETE calls never need to
-    attach it individually.
+NANOBAR_LOGIN_PATH = "/admin/nanobar/login"
+APP_LOGIN_PATH = "/admin/app/login"
+
+
+def _authenticate(
+    test_client: TestClient, *, login_path: str = NANOBAR_LOGIN_PATH, set_default_header: bool = True
+) -> str:
+    """Drives a real `GET`+`POST login_path` flow against `test_client` -- not a bypass, the
+    actual round trip (`GET` issues session + CSRF cookies scoped to that surface's own path;
+    `POST` verifies the username/password against `SQLiteAdminUserStore`'s seeded
+    `admin`/`changeme123` account, authenticates the session). Reads the CSRF token off the
+    `GET` response's own cookies, not the client's aggregate cookie jar -- once a test
+    authenticates against *both* independent admin surfaces (each sets a same-named
+    `nanobar_csrftoken`, scoped to a different path), the aggregate jar holds two same-named
+    cookies and `client.cookies[name]` raises `CookieConflict`.
+
+    Returns the CSRF token used. `set_default_header=True` (the default) also sets it as a
+    *default* header on the client (`httpx.Client.headers` applies to every subsequent request),
+    so most callers' own POST/PATCH/DELETE calls never need to attach it individually -- correct
+    as long as a test only ever authenticates against one surface. A test exercising both
+    surfaces in one session should pass `set_default_header=False` for (at least) the second
+    call, and attach the returned token explicitly per-request instead, since only one surface's
+    token can be "the default" at a time.
     """
-    test_client.get("/admin/login")
-    test_client.headers["x-nanobar-csrf-token"] = test_client.cookies["nanobar_csrftoken"]
+    get_response = test_client.get(login_path)
+    csrf_token = get_response.cookies["nanobar_csrftoken"]
+    if set_default_header:
+        test_client.headers["x-nanobar-csrf-token"] = csrf_token
     login_response = test_client.post(
-        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+        login_path,
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+        headers={"x-nanobar-csrf-token": csrf_token},
     )
     assert login_response.status_code == 200
+    return csrf_token
 
 
 @pytest.fixture
@@ -154,8 +185,13 @@ def events_db_path(tmp_path: Path) -> str:
 
 
 @pytest.fixture
-def admin_db_path(tmp_path: Path) -> str:
-    return str(tmp_path / "admin.db")
+def app_admin_db_path(tmp_path: Path) -> str:
+    return str(tmp_path / "app_admin.db")
+
+
+@pytest.fixture
+def nanobar_admin_db_path(tmp_path: Path) -> str:
+    return str(tmp_path / "nanobar_admin.db")
 
 
 @pytest.fixture
@@ -172,7 +208,8 @@ def route_manifest_path(tmp_path: Path) -> str:
 def client(
     db_path: str,
     events_db_path: str,
-    admin_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
     nanobar_type_system_db_path: str,
     route_manifest_path: str,
 ) -> TestClient:
@@ -180,7 +217,8 @@ def client(
         build_app(
             db_path=db_path,
             events_db_path=events_db_path,
-            admin_db_path=admin_db_path,
+            app_admin_db_path=app_admin_db_path,
+            nanobar_admin_db_path=nanobar_admin_db_path,
             nanobar_type_system_db_path=nanobar_type_system_db_path,
             route_manifest_path=route_manifest_path,
         )
@@ -192,44 +230,84 @@ def client(
 # ---------------------------------------------------------------------- admin auth wiring ---
 #
 # The unit-level behavior of session_protected()/CSRFMiddleware/SQLiteSessionBackend is covered
-# by tests/test_admin_auth.py. These verify the *real app* is actually wired up to use them --
-# an unauthenticated request to the real /admin/nanobar/* mount really is gated, and the real
-# /admin/login route really does establish and authenticate a session end to end.
+# by tests/test_admin_auth.py. These verify the *real app* is actually wired up to use two fully
+# independent admin surfaces -- an unauthenticated request to either real mount really is gated,
+# each real login route really does establish and authenticate its own session end to end, and
+# (this app's actual point) authenticating one surface never authenticates, or otherwise
+# disturbs, the other.
 
 
-def _unauthenticated_client(db_path: str, events_db_path: str, admin_db_path: str) -> TestClient:
+def _unauthenticated_client(
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
+) -> TestClient:
     return TestClient(
-        build_app(db_path=db_path, events_db_path=events_db_path, admin_db_path=admin_db_path),
+        build_app(
+            db_path=db_path,
+            events_db_path=events_db_path,
+            app_admin_db_path=app_admin_db_path,
+            nanobar_admin_db_path=nanobar_admin_db_path,
+        ),
         follow_redirects=False,
     )
 
 
-def test_unauthenticated_dashboard_request_redirects_to_login(
-    db_path: str, events_db_path: str, admin_db_path: str
+@pytest.mark.parametrize(
+    ("login_path", "dashboard_path", "api_path"),
+    [
+        (NANOBAR_LOGIN_PATH, "/admin/nanobar/dashboard", "/admin/nanobar/api/nanobars"),
+        (APP_LOGIN_PATH, "/admin/app/dashboard", "/admin/app/api/posts"),
+    ],
+    ids=["nanobar", "app"],
+)
+def test_unauthenticated_dashboard_request_redirects_to_that_surfaces_own_login(
+    db_path: str,
+    events_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
+    dashboard_path: str,
+    api_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
 
-    response = client.get("/admin/nanobar/dashboard")
+    response = client.get(dashboard_path)
 
     assert response.status_code == 302
-    assert response.headers["location"] == "/admin/login"
+    assert response.headers["location"] == login_path
 
 
-def test_unauthenticated_api_request_gets_401_envelope(db_path: str, events_db_path: str, admin_db_path: str) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+@pytest.mark.parametrize(
+    ("login_path", "dashboard_path", "api_path"),
+    [
+        (NANOBAR_LOGIN_PATH, "/admin/nanobar/dashboard", "/admin/nanobar/api/nanobars"),
+        (APP_LOGIN_PATH, "/admin/app/dashboard", "/admin/app/api/posts"),
+    ],
+    ids=["nanobar", "app"],
+)
+def test_unauthenticated_api_request_gets_401_envelope(
+    db_path: str,
+    events_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
+    dashboard_path: str,
+    api_path: str,
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
 
-    response = client.get("/admin/nanobar/api/nanobars")
+    response = client.get(api_path)
 
     assert response.status_code == 401
     assert response.json()["status"] == "error"
 
 
+@pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
 def test_login_get_serves_the_login_page_and_issues_cookies(
-    db_path: str, events_db_path: str, admin_db_path: str
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
 
-    response = client.get("/admin/login")
+    response = client.get(login_path)
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -237,67 +315,130 @@ def test_login_get_serves_the_login_page_and_issues_cookies(
     assert "nanobar_csrftoken" in response.cookies
 
 
-def test_login_post_without_a_prior_get_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+@pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
+def test_login_post_without_a_prior_get_is_rejected(
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
 
     # No prior GET -> no session cookie, no CSRF cookie/header -- CSRFMiddleware rejects first.
-    response = client.post(
-        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
-    )
+    response = client.post(login_path, json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD})
 
     assert response.status_code == 403
 
 
-def test_login_post_with_wrong_password_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
-    client.get("/admin/login")
-    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+@pytest.mark.parametrize(
+    ("login_path", "api_path"),
+    [(NANOBAR_LOGIN_PATH, "/admin/nanobar/api/nanobars"), (APP_LOGIN_PATH, "/admin/app/api/posts")],
+    ids=["nanobar", "app"],
+)
+def test_login_post_with_wrong_password_is_rejected(
+    db_path: str,
+    events_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
+    api_path: str,
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    get_response = client.get(login_path)
+    csrf_token = get_response.cookies["nanobar_csrftoken"]
 
-    response = client.post("/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": "wrong-password"})
+    response = client.post(
+        login_path,
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": "wrong-password"},
+        headers={"x-nanobar-csrf-token": csrf_token},
+    )
 
     assert response.status_code == 401
     # A wrong-password attempt must not authenticate the session -- confirmed by a follow-up
     # request still being gated, not just by this response's own status code.
-    still_gated = client.get("/admin/nanobar/api/nanobars")
+    still_gated = client.get(api_path)
     assert still_gated.status_code == 401
 
 
-def test_login_post_with_unknown_username_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
-    client.get("/admin/login")
-    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+@pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
+def test_login_post_with_unknown_username_is_rejected(
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    get_response = client.get(login_path)
+    csrf_token = get_response.cookies["nanobar_csrftoken"]
 
-    response = client.post("/admin/login", json={"username": "not-a-real-user", "password": DEFAULT_ADMIN_PASSWORD})
+    response = client.post(
+        login_path,
+        json={"username": "not-a-real-user", "password": DEFAULT_ADMIN_PASSWORD},
+        headers={"x-nanobar-csrf-token": csrf_token},
+    )
 
     assert response.status_code == 401
 
 
-def test_login_post_missing_password_field_is_rejected(db_path: str, events_db_path: str, admin_db_path: str) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
-    client.get("/admin/login")
-    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+@pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
+def test_login_post_missing_password_field_is_rejected(
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    get_response = client.get(login_path)
+    csrf_token = get_response.cookies["nanobar_csrftoken"]
 
-    response = client.post("/admin/login", json={"username": DEFAULT_ADMIN_USERNAME})
+    response = client.post(
+        login_path, json={"username": DEFAULT_ADMIN_USERNAME}, headers={"x-nanobar-csrf-token": csrf_token}
+    )
 
     assert response.status_code == 400
 
 
-def test_full_login_flow_grants_access_to_the_gated_dashboard(
-    db_path: str, events_db_path: str, admin_db_path: str
+@pytest.mark.parametrize(
+    ("login_path", "dashboard_path", "redirect"),
+    [
+        (NANOBAR_LOGIN_PATH, "/admin/nanobar/dashboard", "/admin/nanobar/dashboard"),
+        (APP_LOGIN_PATH, "/admin/app/dashboard", "/admin/app/dashboard"),
+    ],
+    ids=["nanobar", "app"],
+)
+def test_full_login_flow_grants_access_to_that_surfaces_own_gated_dashboard(
+    db_path: str,
+    events_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
+    dashboard_path: str,
+    redirect: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, admin_db_path)
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
 
-    client.get("/admin/login")
-    client.headers["x-nanobar-csrf-token"] = client.cookies["nanobar_csrftoken"]
+    csrf_token = _authenticate(client, login_path=login_path)
     login_response = client.post(
-        "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+        login_path,
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+        headers={"x-nanobar-csrf-token": csrf_token},
     )
 
     assert login_response.status_code == 200
-    assert login_response.json()["result"]["data"]["redirect"] == "/admin/app/dashboard"
+    assert login_response.json()["result"]["data"]["redirect"] == redirect
 
-    dashboard_response = client.get("/admin/nanobar/dashboard")
+    dashboard_response = client.get(dashboard_path)
     assert dashboard_response.status_code == 200
+
+
+def test_authenticating_one_admin_surface_never_authenticates_the_other(
+    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
+) -> None:
+    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+
+    _authenticate(client, login_path=NANOBAR_LOGIN_PATH)
+
+    assert client.get("/admin/nanobar/dashboard").status_code == 200
+    # Still gated -- a session on the nanobar-admin surface grants nothing on the app-admin one.
+    assert client.get("/admin/app/dashboard").status_code == 302
+    assert client.get("/admin/app/api/posts").status_code == 401
+
+    _authenticate(client, login_path=APP_LOGIN_PATH, set_default_header=False)
+
+    # Now both are authenticated, independently, at the same time.
+    assert client.get("/admin/app/dashboard").status_code == 200
+    assert client.get("/admin/nanobar/dashboard").status_code == 200
 
 
 # --------------------------------------------------------------------------------- api ---
@@ -358,7 +499,7 @@ def test_api_list_nanobars_filters_by_domain(db_path: str, client: TestClient) -
 
 def test_api_list_nanobars_filters_by_nanobar_type(db_path: str, client: TestClient) -> None:
     # nanobar_type is what the dashboard list page actually groups/filters by -- see
-    # demo/web/nanobars/nanobars-controller.js.
+    # app/pages/nanobars/nanobars-controller.js.
     conn = connect(db_path)
     insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="validator-request-response"))
     insert_nanobar(conn, _make_nanobar("nb-2", nanobar_type="orm-request-response"))
@@ -584,21 +725,32 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
     """
     db_path = str(tmp_path / "regression_bricks.db")
     events_db_path = str(tmp_path / "events.db")
-    admin_db_path = str(tmp_path / "admin.db")
+    app_admin_db_path = str(tmp_path / "app_admin.db")
+    nanobar_admin_db_path = str(tmp_path / "nanobar_admin.db")
     blog_db_path = str(tmp_path / "blog.db")
     shadow_blog_db_path = str(tmp_path / "blog_shadow.db")
 
     app = build_app(
         db_path=db_path,
         events_db_path=events_db_path,
-        admin_db_path=admin_db_path,
+        app_admin_db_path=app_admin_db_path,
+        nanobar_admin_db_path=nanobar_admin_db_path,
         blog_db_path=blog_db_path,
         route_manifest_path=str(tmp_path / "nanobar.api-routes.json"),
     )
     with TestClient(app) as test_client:
-        _authenticate(test_client)
+        # Two independent admin surfaces exercised in one session -- nanobar's token becomes the
+        # client's default header (every /admin/nanobar/* call below relies on it); app's token
+        # is attached explicitly to the one /admin/app/* mutating call, per _authenticate's own
+        # docstring on why only one surface's token can be "the default" at a time.
+        _authenticate(test_client, login_path=NANOBAR_LOGIN_PATH)
+        app_csrf_token = _authenticate(test_client, login_path=APP_LOGIN_PATH, set_default_header=False)
 
-        created = test_client.post("/admin/app/api/posts", json={"title": "Hello", "body": "World"})
+        created = test_client.post(
+            "/admin/app/api/posts",
+            json={"title": "Hello", "body": "World"},
+            headers={"x-nanobar-csrf-token": app_csrf_token},
+        )
         assert created.status_code == 200
 
         # capture_layer()'s events reach events.db via a background EventThread that flushes in
@@ -1697,6 +1849,32 @@ def test_build_app_without_explicit_events_db_path_uses_resolve_events_db_path(
     app = build_app(db_path=str(tmp_path / "regression_bricks.db"))
 
     assert app.state.events_db_path == override
+
+
+def test_resolve_app_admin_db_path_uses_env_var_when_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    override = str(tmp_path / "custom-app-admin.db")
+    monkeypatch.setenv(APP_ADMIN_DB_PATH_ENV_VAR, override)
+
+    assert resolve_app_admin_db_path() == override
+
+
+def test_resolve_app_admin_db_path_defaults_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(APP_ADMIN_DB_PATH_ENV_VAR, raising=False)
+
+    assert resolve_app_admin_db_path() == str(APP_ADMIN_DEFAULT_DB_PATH)
+
+
+def test_resolve_nanobar_admin_db_path_uses_env_var_when_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    override = str(tmp_path / "custom-nanobar-admin.db")
+    monkeypatch.setenv(NANOBAR_ADMIN_DB_PATH_ENV_VAR, override)
+
+    assert resolve_nanobar_admin_db_path() == override
+
+
+def test_resolve_nanobar_admin_db_path_defaults_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(NANOBAR_ADMIN_DB_PATH_ENV_VAR, raising=False)
+
+    assert resolve_nanobar_admin_db_path() == str(NANOBAR_ADMIN_DEFAULT_DB_PATH)
 
 
 def test_resolve_route_manifest_path_uses_env_var_when_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

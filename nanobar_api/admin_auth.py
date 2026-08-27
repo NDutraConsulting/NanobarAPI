@@ -210,7 +210,7 @@ class SQLiteAdminUserStore:
 class SQLiteSessionBackend:
     """Durable session storage in its own SQLite file ("adminDB") -- resolves
     `InMemorySessionBackend`'s two limitations for anything meant to survive a process restart.
-    Opens a fresh connection per call, matching `demo/dashboard/api.py`'s own established
+    Opens a fresh connection per call, matching `admin/nanobar/api.py`'s own established
     per-request-connection convention, rather than holding one connection open across calls."""
 
     def __init__(self, db_path: str) -> None:
@@ -265,13 +265,15 @@ class SQLiteSessionBackend:
             conn.close()
 
 
-def _set_cookie_headers(name: str, value: str, *, httponly: bool, samesite: str) -> list[tuple[bytes, bytes]]:
+def _set_cookie_headers(
+    name: str, value: str, *, httponly: bool, samesite: str, path: str
+) -> list[tuple[bytes, bytes]]:
     """Builds just the `Set-Cookie` header bytes-tuple for `name`/`value`, reusing Starlette's own
     cookie serialization (attribute quoting, `Max-Age`, etc.) rather than hand-rolling the
     `Set-Cookie` string format. A throwaway `Response()` also carries `content-length`/other
     headers we don't want appended to the real response -- filtered out here."""
     cookie_response = Response()
-    cookie_response.set_cookie(name, value, httponly=httponly, samesite=samesite)  # type: ignore[arg-type]
+    cookie_response.set_cookie(name, value, httponly=httponly, samesite=samesite, path=path)  # type: ignore[arg-type]
     return [(k, v) for k, v in cookie_response.raw_headers if k == b"set-cookie"]
 
 
@@ -281,6 +283,14 @@ class CSRFMiddleware:
     defense-in-depth alongside the token check, never instead of it). For any method not in
     `_SAFE_METHODS`, requires `header_name` to match the existing cookie value via
     `secrets.compare_digest` -- mismatched or missing fails closed with 403.
+
+    `cookie_path` (default `/`) scopes the cookie to a URL prefix -- an app with more than one
+    independent admin surface, each gated by its own `session_protected()` (e.g. this project's
+    own demo, `/admin/app/*` vs `/admin/nanobar/*`), should give each one a distinct
+    `cookie_path` so their same-named CSRF cookies never collide in the browser: the browser
+    only sends/exposes a cookie whose `path` is a prefix of the current request's path, so two
+    non-overlapping prefixes are simply never visible to each other, with no `cookie_name`
+    rename required.
     """
 
     def __init__(
@@ -290,11 +300,13 @@ class CSRFMiddleware:
         cookie_name: str = CSRF_COOKIE_NAME,
         header_name: str = CSRF_HEADER_NAME,
         cookie_samesite: str = "lax",
+        cookie_path: str = "/",
     ) -> None:
         self.app = app
         self.cookie_name = cookie_name
         self.header_name = header_name
         self.cookie_samesite = cookie_samesite
+        self.cookie_path = cookie_path
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -316,7 +328,9 @@ class CSRFMiddleware:
             return
 
         new_token = secrets.token_urlsafe(32)
-        cookie_headers = _set_cookie_headers(self.cookie_name, new_token, httponly=False, samesite=self.cookie_samesite)
+        cookie_headers = _set_cookie_headers(
+            self.cookie_name, new_token, httponly=False, samesite=self.cookie_samesite, path=self.cookie_path
+        )
 
         async def wrapped_send(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -326,23 +340,36 @@ class CSRFMiddleware:
         await self.app(scope, receive, wrapped_send)
 
 
-def csrf_protected(*, cookie_samesite: str = "lax") -> tuple[Middleware, ...]:
-    return (Middleware(CSRFMiddleware, cookie_samesite=cookie_samesite),)
+def csrf_protected(*, cookie_samesite: str = "lax", cookie_path: str = "/") -> tuple[Middleware, ...]:
+    return (Middleware(CSRFMiddleware, cookie_samesite=cookie_samesite, cookie_path=cookie_path),)
 
 
 class AdminSessionMiddleware:
     """Reads `ADMIN_SESSION_COOKIE`, resolves it via `backend.get()`. Missing/expired/unknown/
     unauthenticated: a path containing `/api/` gets a 401 `envelope.error()` (matches
-    `demo/dashboard/api.py`'s existing JSON-API convention exactly); any other path (an HTML admin
-    page) gets a redirect to `/admin/login` -- resolves the backlog doc's own Open Decision 2
-    (redirect vs. JSON 401 depends on route shape) via that already-established path convention,
-    not a new per-rule flag or `Accept`-header sniff.
+    `admin/nanobar/api.py`'s existing JSON-API convention exactly); any other path
+    (an HTML admin page) gets a redirect to `login_url` -- resolves the backlog doc's own Open
+    Decision 2 (redirect vs. JSON 401 depends on route shape) via that already-established path
+    convention, not a new per-rule flag or `Accept`-header sniff.
+
+    `login_url` is configurable (default `/admin/login`), not hardcoded -- an app with more than
+    one independent admin surface, each with its own `SessionBackend` and its own login page
+    (e.g. this project's own demo, `/admin/app/login` vs `/admin/nanobar/login`), needs each
+    surface's `session_protected()` to redirect to its own login, not a shared one.
     """
 
-    def __init__(self, app: ASGIApp, *, backend: SessionBackend, ttl_seconds: float = 3600.0) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        backend: SessionBackend,
+        ttl_seconds: float = 3600.0,
+        login_url: str = "/admin/login",
+    ) -> None:
         self.app = app
         self.backend = backend
         self.ttl_seconds = ttl_seconds
+        self.login_url = login_url
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -358,7 +385,7 @@ class AdminSessionMiddleware:
             if "/api/" in scope["path"]:
                 response = JSONResponse(error("authentication required"), status_code=401)
             else:
-                response = RedirectResponse(url="/admin/login", status_code=302)
+                response = RedirectResponse(url=self.login_url, status_code=302)
             await response(scope, receive, send)
             return
 
@@ -366,16 +393,29 @@ class AdminSessionMiddleware:
 
 
 def session_protected(
-    *, cookie_samesite: str = "lax", backend: SessionBackend | None = None, ttl_seconds: float = 3600.0
+    *,
+    cookie_samesite: str = "lax",
+    cookie_path: str = "/",
+    backend: SessionBackend | None = None,
+    ttl_seconds: float = 3600.0,
+    login_url: str = "/admin/login",
 ) -> tuple[Middleware, ...]:
     """Sanctum-SPA-mode equivalent for the admin surface. Bundles `AdminSessionMiddleware` with
     `csrf_protected()` automatically -- there's no legitimate reason to use cookie-session auth
     without CSRF protection, so the factory that grants the cookie also grants the protection, by
-    construction, not by convention."""
+    construction, not by convention.
+
+    `cookie_path`, passed straight through to `csrf_protected()`, scopes this surface's CSRF
+    cookie the same way `login_url` scopes its redirect -- see `CSRFMiddleware`'s own docstring.
+    The session cookie itself isn't set by this middleware (only by whichever login route calls
+    `backend.create()`/sets `ADMIN_SESSION_COOKIE`); give that `set_cookie()` call the same
+    `path` directly for the two to stay consistent.
+    """
     return (
         Middleware(
             AdminSessionMiddleware,
             backend=backend if backend is not None else InMemorySessionBackend(),
             ttl_seconds=ttl_seconds,
+            login_url=login_url,
         ),
-    ) + csrf_protected(cookie_samesite=cookie_samesite)
+    ) + csrf_protected(cookie_samesite=cookie_samesite, cookie_path=cookie_path)

@@ -98,7 +98,7 @@ def resolve_taxonomy_entry(taxonomy: NanobarTypeTaxonomy, nanobar_type: str) -> 
     produces (`nanobar_api/telemetry.py`'s `NanobarProps.type` call sites), neither of which can
     be pre-enumerated as literal keys in the vendored taxonomy JSON:
 
-    - `f"replay-{original_nanobar_type}"` (the dashboard's Run tab, `demo/dashboard/api.py`) --
+    - `f"replay-{original_nanobar_type}"` (the dashboard's Run tab, `admin/nanobar/api.py`) --
       resolved by stripping the prefix and resolving the *original* type instead (recursively,
       so a replay of a worker nanobar still falls through to the `"worker-"` case below).
       Replaying doesn't change what "covered" means for that original layer.

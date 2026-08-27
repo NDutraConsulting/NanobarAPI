@@ -8,7 +8,7 @@ different `channel` for every app, and different channels can genuinely warrant 
 expected-scenario coverage rules (a `"domain.appointments"` worker's failure modes aren't
 necessarily a `"domain.orders"` worker's) -- a static lock file can't grow to cover that without
 a code change and a release. This module is the dynamic layer instead: a dedicated,
-per-application SQLite database (`demo/dashboard/dynamic_taxonomy_db.py` resolves its path, the
+per-application SQLite database (`admin/nanobar/dynamic_taxonomy_db.py` resolves its path, the
 same `demo/data/*.db` convention every other per-app database here already follows) that a
 running app can register new `(key, key_name)` entries into as it actually encounters them --
 `get_or_create_entry()` mirrors `bricks/binding.py`'s `get_or_create_nanobar_by_route_key()`
@@ -95,7 +95,7 @@ def get_or_create_entry(
     conn: sqlite3.Connection, key: str, key_name: str, *, default_entry: NanobarTypeEntry, created_by: str
 ) -> tuple[NanobarTypeEntry, bool]:
     """Atomic get-or-create keyed by `(key, key_name)`. Returns `(entry, was_created)` -- the
-    caller (`demo/dashboard/api.py`'s taxonomy-resolution helper) needs to know which, the same
+    caller (`admin/nanobar/api.py`'s taxonomy-resolution helper) needs to know which, the same
     reporting contract `get_or_create_nanobar_by_route_key()` already established.
 
     `PRIMARY KEY (key, key_name)` alone would reject a concurrent duplicate insert, but the

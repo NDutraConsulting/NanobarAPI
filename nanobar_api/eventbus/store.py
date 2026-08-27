@@ -149,7 +149,7 @@ _EVENT_CALLBACK_PREFIX = "event-callback."
 def derive_component(span_name: str) -> tuple[str, str]:
     """Classify a captured span's `payload["name"]` into a `(kind, name)` component tag.
 
-    `"other"` is a real, intentional catch-all (e.g. `demo/dashboard/api.py`'s ad hoc
+    `"other"` is a real, intentional catch-all (e.g. `admin/nanobar/api.py`'s ad hoc
     `"dashboard.nanobars.list"` span) -- not every span belongs to one of the framework's
     named layers, and guessing at a made-up kind for those would be worse than being honest
     that this is just "some other span," carrying its own name through unchanged.
@@ -477,7 +477,7 @@ def list_stale_workers(conn: sqlite3.Connection, staleness_seconds: float) -> li
 
 def list_workers(conn: sqlite3.Connection) -> list[WorkerRecord]:
     """Every registered worker, most-recently-alive first -- "reviewing configurations and
-    monitoring lifecycles" (an app/dashboard consumer, e.g. `demo/dashboard/api.py`'s workers
+    monitoring lifecycles" (an app/dashboard consumer, e.g. `admin/nanobar/api.py`'s workers
     routes), a plain listing rather than `list_stale_workers()`'s narrower filtered-to-stale
     view. Whether a given row is stale is left for the caller to decide (it knows its own
     staleness threshold; this function doesn't invent one)."""
@@ -564,7 +564,7 @@ def get_events_by_trace_id(conn: sqlite3.Connection, trace_id: str, channel: str
 def find_latest_span_by_nanobar_type(conn: sqlite3.Connection, channel: str, nanobar_type: str) -> Event | None:
     """The most recently recorded span tagged `nanobar_type` on `channel` (typically `"trace"`),
     or `None` if none exists yet. Evidence for a `nanobar_type` a caller can't otherwise
-    classify (see `demo/dashboard/api.py`'s `nanobar_coverage_gaps` -- a genuinely unresolvable
+    classify (see `admin/nanobar/api.py`'s `nanobar_coverage_gaps` -- a genuinely unresolvable
     type resolves to a `"needs_classification"` status pointing here, a real captured span, not
     just a name with nothing to investigate)."""
     row = conn.execute(

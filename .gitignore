@@ -16,5 +16,5 @@ build/
 dist/
 
 demo/data/
-demo/web/node_modules/
+app/pages/node_modules/
 

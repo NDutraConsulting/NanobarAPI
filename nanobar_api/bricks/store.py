@@ -170,7 +170,7 @@ def set_nanobar_domain(conn: sqlite3.Connection, nanobar_id: str, domain: str | 
     `update_nanobar`'s `domain` field (a human-editable value with "re-supply everything"
     partial-update semantics), this one is for a system-managed correction: backfilling/
     correcting `domain` on an existing route-keyed nanobar against the current route manifest
-    (see `demo/dashboard/nanobar_refresh.py`), without touching any of the human-edited fields.
+    (see `admin/nanobar/nanobar_refresh.py`), without touching any of the human-edited fields.
     """
     with conn:
         conn.execute("UPDATE nanobars SET domain = ? WHERE nanobar_id = ?", (domain, nanobar_id))
@@ -183,7 +183,7 @@ def get_nanobar(conn: sqlite3.Connection, nanobar_id: str) -> Nanobar | None:
 
 def list_known_route_keys(conn: sqlite3.Connection) -> set[str]:
     """Every distinct `monitor_target_refs[].stable_name` (route key) any existing nanobar
-    already carries -- used by `demo/dashboard/nanobar_refresh.py` to find which manifest
+    already carries -- used by `admin/nanobar/nanobar_refresh.py` to find which manifest
     routes have no nanobar yet, without creating a duplicate for one that does."""
     rows = conn.execute(
         "SELECT DISTINCT json_extract(value, '$.stable_name') FROM nanobars, json_each(monitor_target_refs_json)"

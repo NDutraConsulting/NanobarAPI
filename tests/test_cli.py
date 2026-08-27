@@ -245,11 +245,11 @@ def test_main_dispatches_to_routes(tmp_path: Path, routes_app_file: Path) -> Non
 def test_routes_supports_a_dotted_module_path_for_packages_using_relative_imports(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # A package whose app.py uses `from . import sibling` -- exactly demo/dashboard/app.py's
-    # own shape -- can't be loaded via a bare file path (no parent package context for the
-    # relative import to resolve against). --module goes through importlib.import_module
-    # instead, which resolves relative imports correctly as long as the package's parent
-    # directory is on sys.path (as it is here, and as it is for `uv run` from a repo root).
+    # A package whose app.py uses `from . import sibling` can't be loaded via a bare file path
+    # (no parent package context for the relative import to resolve against). --module goes
+    # through importlib.import_module instead, which resolves relative imports correctly as
+    # long as the package's parent directory is on sys.path (as it is here, and as it is for
+    # `uv run` from a repo root).
     package_dir = tmp_path / "mypkg"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("")

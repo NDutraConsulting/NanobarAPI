@@ -81,7 +81,7 @@ def routes(argv: list[str]) -> None:
     parser.add_argument(
         "--module",
         default=None,
-        help="dotted, importable module path (e.g. demo.dashboard.app) instead of a file path -- required for an "
+        help="dotted, importable module path (e.g. mypackage.app) instead of a file path -- required for an "
         "app that lives inside a package and uses relative imports, which a bare file path can't load",
     )
     parser.add_argument(

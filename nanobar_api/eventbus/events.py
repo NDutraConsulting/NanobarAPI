@@ -28,7 +28,7 @@ class TraceSummary:
 class WorkerRecord:
     """A registered worker's own most-recently-seen liveness + configuration snapshot -- what
     `store.list_workers()` returns, for "reviewing configurations and monitoring lifecycles"
-    (an app/dashboard consumer, e.g. `demo/dashboard/api.py`'s workers routes). `mode`/
+    (an app/dashboard consumer, e.g. `admin/nanobar/api.py`'s workers routes). `mode`/
     `schedule`/`poll_interval_s`/`claim_limit`/`lease_seconds` are `None` for a worker
     registered before these columns existed (or a caller that never supplied them) -- not
     every registration is guaranteed to carry full configuration."""

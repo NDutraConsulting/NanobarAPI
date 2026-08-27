@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Admin login · NanobarAPI</title>
+  <link rel="stylesheet" href="/static/admin-app-login/admin-app-login.css" />
+</head>
+<body>
+  <main class="login-page">
+    <form id="login-form" class="login-card">
+      <h1 class="login-title">App Admin</h1>
+      <p class="login-subtitle">Blog posts and appointment notifications.</p>
+
+      <label class="login-field">
+        <span class="login-field-label">Username</span>
+        <input type="text" id="login-username" name="username" autocomplete="username" required autofocus />
+      </label>
+
+      <label class="login-field">
+        <span class="login-field-label">Password</span>
+        <input type="password" id="login-password" name="password" autocomplete="current-password" required />
+      </label>
+
+      <button type="submit" id="login-submit-btn" class="login-submit-btn">Sign in</button>
+      <p id="login-error" class="login-error" role="alert" hidden></p>
+
+      <p class="login-hint">Demo default: <code>admin</code> / <code>changeme123</code></p>
+    </form>
+  </main>
+
+  <script type="module" src="/static/admin-app-login/admin-app-login-controller.js"></script>
+</body>
+</html>

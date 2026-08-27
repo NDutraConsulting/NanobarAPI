@@ -174,6 +174,16 @@ def test_csrf_issues_cookie_on_a_safe_method_when_absent() -> None:
     assert CSRF_COOKIE_NAME in response.cookies
 
 
+def test_csrf_issues_cookie_scoped_to_a_custom_path() -> None:
+    app = _app_with_middleware(Middleware(CSRFMiddleware, cookie_path="/admin/app"))
+    client = TestClient(app)
+
+    response = client.get("/x")
+
+    set_cookie_header = response.headers["set-cookie"]
+    assert "Path=/admin/app" in set_cookie_header
+
+
 def test_csrf_does_not_reissue_cookie_when_already_present() -> None:
     app = _app_with_middleware(Middleware(CSRFMiddleware))
     client = TestClient(app)
@@ -283,6 +293,19 @@ def test_admin_session_401s_api_path_when_no_cookie() -> None:
     assert response.json()["status"] == "error"
 
 
+def test_admin_session_redirects_to_a_custom_login_url() -> None:
+    backend = InMemorySessionBackend()
+    app = _app_with_middleware(
+        Middleware(AdminSessionMiddleware, backend=backend, login_url="/admin/app/login"), path="/x"
+    )
+    client = TestClient(app, follow_redirects=False)
+
+    response = client.get("/x")
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/admin/app/login"
+
+
 def test_admin_session_redirects_when_session_is_unauthenticated() -> None:
     client, backend = _login_client()
     record = backend.create(ttl_seconds=60.0)
@@ -346,6 +369,24 @@ def test_session_protected_defaults_to_a_fresh_in_memory_backend() -> None:
     tiers = session_protected()
 
     assert isinstance(tiers[0].kwargs["backend"], InMemorySessionBackend)
+
+
+def test_session_protected_defaults_login_url_to_admin_login() -> None:
+    tiers = session_protected()
+
+    assert tiers[0].kwargs["login_url"] == "/admin/login"
+
+
+def test_session_protected_passes_through_a_custom_login_url() -> None:
+    tiers = session_protected(login_url="/admin/app/login")
+
+    assert tiers[0].kwargs["login_url"] == "/admin/app/login"
+
+
+def test_session_protected_passes_through_a_custom_cookie_path() -> None:
+    tiers = session_protected(cookie_path="/admin/app")
+
+    assert tiers[1].kwargs["cookie_path"] == "/admin/app"
 
 
 # ------------------------------------------------------------------ SQLiteAdminUserStore

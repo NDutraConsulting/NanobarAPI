@@ -2,7 +2,7 @@
 `RouteManifestEntry` list, independent of whether any traffic has ever hit it.
 
 This is the mechanism behind `nanobar.api-routes.json` (see `nanobar_api/cli.py`'s `routes`
-subcommand and `demo/dashboard/app.py`'s on-launch call) -- a ground-truth inventory of an
+subcommand and `app/main.py`'s on-launch call) -- a ground-truth inventory of an
 app's surface area, used to (a) let a nanobar-refresh step create a placeholder `Nanobar` for
 a route with zero captured traffic yet, so 100% of the app is reviewable, not just whatever's
 been exercised, and (b) let every such nanobar carry the correct `domain` (the route's owning

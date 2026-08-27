@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from demo.dashboard.app import build_app
-from demo.dashboard.blog_publisher_worker import PostPublisherThread
+from app.main import build_app
+from app.services.blog_publisher_worker import PostPublisherThread
 from nanobar_api.admin_auth import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 
 
@@ -39,14 +39,20 @@ def client(tmp_path: Path, blog_db_path: str) -> Iterator[TestClient]:
     app = build_app(
         db_path=str(tmp_path / "regression_bricks.db"),
         events_db_path=str(tmp_path / "events.db"),
-        admin_db_path=str(tmp_path / "admin.db"),
+        app_admin_db_path=str(tmp_path / "app_admin.db"),
+        nanobar_admin_db_path=str(tmp_path / "nanobar_admin.db"),
         blog_db_path=blog_db_path,
     )
     with TestClient(app) as test_client:
-        test_client.get("/admin/login")
-        test_client.headers["x-nanobar-csrf-token"] = test_client.cookies["nanobar_csrftoken"]
+        # This fixture only ever drives /admin/app/* routes (creating/editing posts,
+        # notifications) -- the app-admin surface's own login, independent of nanobar-admin's.
+        get_response = test_client.get("/admin/app/login")
+        csrf_token = get_response.cookies["nanobar_csrftoken"]
+        test_client.headers["x-nanobar-csrf-token"] = csrf_token
         login_response = test_client.post(
-            "/admin/login", json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD}
+            "/admin/app/login",
+            json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+            headers={"x-nanobar-csrf-token": csrf_token},
         )
         assert login_response.status_code == 200
         yield test_client
@@ -207,7 +213,7 @@ def test_admin_app_dashboard_page_is_served(client: TestClient) -> None:
 
 
 def test_publisher_flips_due_scheduled_posts_to_published(client: TestClient, blog_db_path: str) -> None:
-    from demo.dashboard.blog_db import build_session_factory
+    from app.db.blog_session import build_session_factory
     from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 
     scheduled_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()  # already due
@@ -228,7 +234,7 @@ def test_publisher_flips_due_scheduled_posts_to_published(client: TestClient, bl
 
 
 def test_publisher_run_once_is_zero_when_nothing_is_due(client: TestClient, blog_db_path: str) -> None:
-    from demo.dashboard.blog_db import build_session_factory
+    from app.db.blog_session import build_session_factory
     from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 
     session_factory = build_session_factory(
@@ -240,8 +246,8 @@ def test_publisher_run_once_is_zero_when_nothing_is_due(client: TestClient, blog
 
 
 def test_publisher_lifespan_starts_and_stops_cleanly(blog_db_path: str) -> None:
-    from demo.dashboard.blog_db import build_session_factory
-    from demo.dashboard.blog_publisher_worker import post_publisher_lifespan
+    from app.db.blog_session import build_session_factory
+    from app.services.blog_publisher_worker import post_publisher_lifespan
     from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
 
     session_factory = build_session_factory(
@@ -318,7 +324,8 @@ def test_unauthenticated_admin_app_dashboard_redirects_to_login(tmp_path: Path, 
     app = build_app(
         db_path=str(tmp_path / "b.db"),
         events_db_path=str(tmp_path / "e.db"),
-        admin_db_path=str(tmp_path / "a.db"),
+        app_admin_db_path=str(tmp_path / "aa.db"),
+        nanobar_admin_db_path=str(tmp_path / "na.db"),
         blog_db_path=blog_db_path,
     )
     client = TestClient(app, follow_redirects=False)
@@ -326,14 +333,15 @@ def test_unauthenticated_admin_app_dashboard_redirects_to_login(tmp_path: Path, 
     response = client.get("/admin/app/dashboard")
 
     assert response.status_code == 302
-    assert response.headers["location"] == "/admin/login"
+    assert response.headers["location"] == "/admin/app/login"
 
 
 def test_unauthenticated_admin_app_api_gets_401(tmp_path: Path, blog_db_path: str) -> None:
     app = build_app(
         db_path=str(tmp_path / "b.db"),
         events_db_path=str(tmp_path / "e.db"),
-        admin_db_path=str(tmp_path / "a.db"),
+        app_admin_db_path=str(tmp_path / "aa.db"),
+        nanobar_admin_db_path=str(tmp_path / "na.db"),
         blog_db_path=blog_db_path,
     )
     client = TestClient(app, follow_redirects=False)
