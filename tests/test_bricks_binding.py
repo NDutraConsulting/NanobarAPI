@@ -1,25 +1,29 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 from pathlib import Path
 
 import pytest
+from sqlalchemy.orm import Session
 
-from nanobar_api.bricks.binding import (
-    bind_composite_nanobars,
-    bind_new_bricks_to_nanobars,
-    get_or_create_nanobar_by_route_key,
-)
-from nanobar_api.bricks.schema import RegressionBrick
-from nanobar_api.bricks.store import (
-    connect,
-    get_bricks_for_nanobar,
-    get_nanobars_for_brick,
-    insert_brick,
-    list_nanobars,
-)
+from nanobar_api.bricks.binding import bind_composite_nanobars, bind_new_bricks_to_nanobars
+from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
+from nanobar_api.nanobar.model import NanobarBrickBinding
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.persistence import build_session_factory
+from nanobar_api.regression_brick.model import RegressionBrick
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
 from nanobar_api.taxonomy import ExpectedScenario, NanobarTypeEntry, NanobarTypeTaxonomy
+
+
+def _repository() -> EventQueueRepository:
+    return EventQueueRepository([ChannelConfig(name="snapshot")])
+
+
+def _repos(tmp_path: Path) -> tuple[Session, NanobarRepository, RegressionBrickRepository]:
+    session_factory = build_session_factory(str(tmp_path / "regression_bricks.db"), repository=_repository())
+    session = session_factory()
+    return session, NanobarRepository(session), RegressionBrickRepository(session)
 
 
 def _make_brick(
@@ -50,13 +54,13 @@ def _make_brick(
 
 
 def test_get_or_create_creates_then_reuses(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        first, created_first = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        first, created_first = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
         )
-        second, created_second = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        second, created_second = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
         )
 
         assert created_first is True
@@ -66,54 +70,54 @@ def test_get_or_create_creates_then_reuses(tmp_path: Path) -> None:
         assert first.monitor_target_refs[0].stable_name == "GET /health"
         assert first.monitor_target_refs[0].target_type == "route"
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_stamps_domain_on_a_new_row(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        nanobar, created = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health", domain="admin/nanobar"
+        nanobar, created = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health", domain="admin/nanobar"
         )
 
         assert created is True
         assert nanobar.domain == "admin/nanobar"
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_domain_defaults_to_none(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        nanobar, _ = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        nanobar, _ = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
         )
 
         assert nanobar.domain is None
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_distinguishes_by_nanobar_type(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        validator_nanobar, _ = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        validator_nanobar, _ = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
         )
-        controller_nanobar, _ = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="controller-request-response", route_key="GET /health"
+        controller_nanobar, _ = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="controller-request-response", route_key="GET /health"
         )
 
         assert validator_nanobar.nanobar_id != controller_nanobar.nanobar_id
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_placeholder_metadata_matches_seed_script_convention(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        nanobar, _ = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="GET /health"
+        nanobar, _ = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
         )
 
         assert nanobar.regression_weight == 0.5
@@ -121,30 +125,32 @@ def test_get_or_create_placeholder_metadata_matches_seed_script_convention(tmp_p
         assert nanobar.request_object_id == "req-GET /health"
         assert nanobar.response_object_id == "res-GET /health"
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_concurrent_first_sight_creates_exactly_one_row(tmp_path: Path) -> None:
-    db_path = str(tmp_path / "regression_bricks.db")
-    setup_conn = connect(db_path)
-    setup_conn.close()
+    """Atomicity now comes from the engine-level `BEGIN IMMEDIATE` listener installed by
+    `build_session_factory` (`nanobar_api/persistence.py`), not a per-call manual transaction --
+    all threads share one `session_factory`/engine, each opening its own `Session`, matching how
+    a real multi-request server shares one engine across concurrent request-scoped sessions."""
+    session_factory = build_session_factory(str(tmp_path / "regression_bricks.db"), repository=_repository())
 
     created_flags: list[bool] = []
     lock = threading.Lock()
     errors: list[BaseException] = []
 
     def _worker() -> None:
-        conn = connect(db_path)
+        session = session_factory()
         try:
-            _, was_created = get_or_create_nanobar_by_route_key(
-                conn, nanobar_type="validator-request-response", route_key="GET /health"
+            _, was_created = NanobarRepository(session).get_or_create_by_route_key(
+                nanobar_type="validator-request-response", route_key="GET /health"
             )
             with lock:
                 created_flags.append(was_created)
         except BaseException as exc:  # pragma: no cover - surfaced via `errors` assertion below
             errors.append(exc)
         finally:
-            conn.close()
+            session.close()
 
     threads = [threading.Thread(target=_worker) for _ in range(5)]
     for t in threads:
@@ -156,202 +162,159 @@ def test_get_or_create_concurrent_first_sight_creates_exactly_one_row(tmp_path: 
     assert created_flags.count(True) == 1
     assert created_flags.count(False) == 4
 
-    conn = connect(db_path)
+    session = session_factory()
     try:
-        nanobars = list_nanobars(conn)
+        nanobars = NanobarRepository(session).list_nanobars()
         assert len(nanobars) == 1
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_creates_nanobars_and_bindings(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         bricks = [
             _make_brick("rbrick-1", "sha256:one", nanobar_type="validator-request-response"),
             _make_brick("rbrick-2", "sha256:two", nanobar_type="controller-request-response"),
         ]
         for brick in bricks:
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
-        result = bind_new_bricks_to_nanobars(conn, bricks)
+        result = bind_new_bricks_to_nanobars(nanobar_repository, bricks)
 
         assert result.nanobars_created == 2
         assert result.bindings_created == 2
         assert result.skipped == 0
 
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         assert len(nanobars) == 2
         for brick in bricks:
-            bound_nanobars = get_nanobars_for_brick(conn, brick.regression_brick_id)
+            bound_nanobars = brick_repository.nanobars_for(brick.regression_brick_id)
             assert len(bound_nanobars) == 1
             assert bound_nanobars[0].nanobar_type == brick.source["nanobar_type"]
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_stamps_domain_from_route_key_domains(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         brick = _make_brick("rbrick-1", "sha256:one", route_key="GET /admin/nanobar/dashboard")
-        insert_brick(conn, brick)
+        brick_repository.create(brick)
 
-        bind_new_bricks_to_nanobars(conn, [brick], route_key_domains={"GET /admin/nanobar/dashboard": "admin/nanobar"})
+        bind_new_bricks_to_nanobars(
+            nanobar_repository, [brick], route_key_domains={"GET /admin/nanobar/dashboard": "admin/nanobar"}
+        )
 
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         assert nanobars[0].domain == "admin/nanobar"
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_domain_is_none_for_a_route_key_missing_from_the_mapping(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         brick = _make_brick("rbrick-1", "sha256:one", route_key="GET /unmapped")
-        insert_brick(conn, brick)
+        brick_repository.create(brick)
 
-        bind_new_bricks_to_nanobars(conn, [brick], route_key_domains={"GET /other": "admin/app"})
+        bind_new_bricks_to_nanobars(nanobar_repository, [brick], route_key_domains={"GET /other": "admin/app"})
 
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         assert nanobars[0].domain is None
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_reuses_nanobar_for_bricks_sharing_route_key_and_type(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         bricks = [
             _make_brick("rbrick-1", "sha256:one"),
             _make_brick("rbrick-2", "sha256:two"),
         ]
         for brick in bricks:
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
-        result = bind_new_bricks_to_nanobars(conn, bricks)
+        result = bind_new_bricks_to_nanobars(nanobar_repository, bricks)
 
         assert result.nanobars_created == 1
         assert result.bindings_created == 2
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         assert len(nanobars) == 1
-        bricks_bound = get_bricks_for_nanobar(conn, nanobars[0].nanobar_id)
+        bricks_bound = nanobar_repository.bricks_for(nanobars[0].nanobar_id)
         assert {b.regression_brick_id for b in bricks_bound} == {"rbrick-1", "rbrick-2"}
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_skips_bricks_without_nanobar_type_or_route_key(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
         bricks = [
             _make_brick("rbrick-1", "sha256:one", nanobar_type=None),
             _make_brick("rbrick-2", "sha256:two", route_key=None),
         ]
 
-        result = bind_new_bricks_to_nanobars(conn, bricks)
+        result = bind_new_bricks_to_nanobars(nanobar_repository, bricks)
 
         assert result.nanobars_created == 0
         assert result.bindings_created == 0
         assert result.skipped == 2
-        assert list_nanobars(conn) == []
+        assert nanobar_repository.list_nanobars() == []
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_uses_match_method_exact(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         brick = _make_brick("rbrick-1", "sha256:one")
-        insert_brick(conn, brick)
+        brick_repository.create(brick)
 
-        bind_new_bricks_to_nanobars(conn, [brick])
+        bind_new_bricks_to_nanobars(nanobar_repository, [brick])
 
-        row = conn.execute(
-            "SELECT match_method, matcher_version, matched_by, confidence FROM nanobar_regression_bricks"
-        ).fetchone()
-        assert row[0] == "exact"
-        assert row[1] == "v1"
-        assert row[2] == "auto-registration"
-        assert row[3] == 1.0
+        nanobar = nanobar_repository.list_nanobars()[0]
+        binding = session.query(NanobarBrickBinding).one()
+        assert binding.nanobar_id == nanobar.nanobar_id
+        assert binding.match_method == "exact"
+        assert binding.matcher_version == "v1"
+        assert binding.matched_by == "auto-registration"
+        assert binding.confidence == 1.0
     finally:
-        conn.close()
+        session.close()
 
 
 def test_get_or_create_finds_match_among_multiple_nanobars_of_same_type(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, _brick_repository = _repos(tmp_path)
     try:
-        get_or_create_nanobar_by_route_key(conn, nanobar_type="validator-request-response", route_key="GET /health")
-        get_or_create_nanobar_by_route_key(conn, nanobar_type="validator-request-response", route_key="POST /orders")
+        nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="GET /health"
+        )
+        nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="POST /orders"
+        )
 
-        found, was_created = get_or_create_nanobar_by_route_key(
-            conn, nanobar_type="validator-request-response", route_key="POST /orders"
+        found, was_created = nanobar_repository.get_or_create_by_route_key(
+            nanobar_type="validator-request-response", route_key="POST /orders"
         )
 
         assert was_created is False
         assert found.monitor_target_refs[0].stable_name == "POST /orders"
     finally:
-        conn.close()
-
-
-class _InsertFailingConnection:
-    """Duck-typed `sqlite3.Connection` stand-in that fails the `INSERT INTO nanobars` statement
-    specifically — exercises `get_or_create_nanobar_by_route_key`'s rollback-on-failure path
-    without relying on a specific real SQLite error. Supports the context-manager protocol too,
-    since `insert_nanobar` uses `with conn:` internally (never reached here, since the failure
-    happens one statement earlier, inside `execute()`)."""
-
-    def __init__(self, real: sqlite3.Connection) -> None:
-        self._real = real
-        self.rolled_back = False
-
-    def __enter__(self) -> _InsertFailingConnection:
-        self._real.__enter__()
-        return self
-
-    def __exit__(self, *exc_info: object) -> bool | None:
-        return self._real.__exit__(*exc_info)  # type: ignore[arg-type]
-
-    def execute(self, sql: str, *args: object, **kwargs: object) -> sqlite3.Cursor:
-        if "INSERT INTO nanobars" in sql:
-            raise RuntimeError("boom")
-        return self._real.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
-
-    def commit(self) -> None:
-        self._real.commit()
-
-    def rollback(self) -> None:
-        self.rolled_back = True
-        self._real.rollback()
-
-
-def test_get_or_create_rolls_back_on_failure(tmp_path: Path) -> None:
-    real_conn = connect(str(tmp_path / "regression_bricks.db"))
-    try:
-        proxy = _InsertFailingConnection(real_conn)
-
-        with pytest.raises(RuntimeError, match="boom"):
-            get_or_create_nanobar_by_route_key(
-                proxy,  # type: ignore[arg-type]
-                nanobar_type="validator-request-response",
-                route_key="GET /health",
-            )
-
-        assert proxy.rolled_back is True
-        assert list_nanobars(real_conn) == []
-    finally:
-        real_conn.close()
+        session.close()
 
 
 def test_bind_composite_creates_composite_nanobar_when_all_member_types_present(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         controller_brick = _make_brick("rbrick-1", "sha256:one", nanobar_type="controller-request-response")
         orm_brick = _make_brick("rbrick-2", "sha256:two", nanobar_type="orm-request-response")
         for brick in (controller_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [controller_brick, orm_brick],
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
@@ -361,16 +324,16 @@ def test_bind_composite_creates_composite_nanobar_when_all_member_types_present(
         assert result.bindings_created == 2
         assert result.skipped == 0
 
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         composite = next(n for n in nanobars if n.nanobar_type == "controller-to-db")
-        bound = get_bricks_for_nanobar(conn, composite.nanobar_id)
+        bound = nanobar_repository.bricks_for(composite.nanobar_id)
         assert {b.regression_brick_id for b in bound} == {"rbrick-1", "rbrick-2"}
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_skips_route_key_missing_a_member_type(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         controller_brick = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type="controller-request-response", route_key="GET /health"
@@ -378,10 +341,10 @@ def test_bind_composite_skips_route_key_missing_a_member_type(tmp_path: Path) ->
         # orm brick for a DIFFERENT route -- no composite should form for either route.
         orm_brick = _make_brick("rbrick-2", "sha256:two", nanobar_type="orm-request-response", route_key="POST /other")
         for brick in (controller_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [controller_brick, orm_brick],
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
@@ -390,13 +353,13 @@ def test_bind_composite_skips_route_key_missing_a_member_type(tmp_path: Path) ->
         assert result.nanobars_created == 0
         assert result.bindings_created == 0
         assert result.skipped == 2
-        assert list_nanobars(conn) == []
+        assert nanobar_repository.list_nanobars() == []
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_derives_route_key_for_untagged_api_brick(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         api_brick = _make_brick(
             "rbrick-1",
@@ -407,10 +370,10 @@ def test_bind_composite_derives_route_key_for_untagged_api_brick(tmp_path: Path)
         )
         orm_brick = _make_brick("rbrick-2", "sha256:two", nanobar_type="orm-request-response", route_key="POST /orders")
         for brick in (api_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [api_brick, orm_brick],
             composite_nanobar_type="api-to-db",
             member_nanobar_types=("api-request-response", "orm-request-response"),
@@ -418,15 +381,15 @@ def test_bind_composite_derives_route_key_for_untagged_api_brick(tmp_path: Path)
 
         assert result.nanobars_created == 1
         assert result.bindings_created == 2
-        nanobars = list_nanobars(conn)
+        nanobars = nanobar_repository.list_nanobars()
         composite = next(n for n in nanobars if n.nanobar_type == "api-to-db")
         assert composite.monitor_target_refs[0].stable_name == "POST /orders"
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_reuses_existing_composite_nanobar_across_calls(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         first_pair = [
             _make_brick("rbrick-1", "sha256:one", nanobar_type="controller-request-response"),
@@ -437,49 +400,49 @@ def test_bind_composite_reuses_existing_composite_nanobar_across_calls(tmp_path:
             _make_brick("rbrick-4", "sha256:four", nanobar_type="orm-request-response"),
         ]
         for brick in [*first_pair, *second_pair]:
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             first_pair,
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
         )
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             second_pair,
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
         )
 
         assert result.nanobars_created == 0  # reused the nanobar created for the first pair
-        nanobars = [n for n in list_nanobars(conn) if n.nanobar_type == "controller-to-db"]
+        nanobars = [n for n in nanobar_repository.list_nanobars() if n.nanobar_type == "controller-to-db"]
         assert len(nanobars) == 1
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_ignores_brick_with_no_derivable_route_key(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         no_route_key_brick = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type=None, route_key=None, request={"body": {}}
         )
         orm_brick = _make_brick("rbrick-2", "sha256:two", nanobar_type="orm-request-response")
         for brick in (no_route_key_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [no_route_key_brick, orm_brick],
             composite_nanobar_type="api-to-db",
             member_nanobar_types=("api-request-response", "orm-request-response"),
         )
 
         assert result.bindings_created == 0
-        assert list_nanobars(conn) == []
+        assert nanobar_repository.list_nanobars() == []
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_treats_empty_string_route_key_as_absent(tmp_path: Path) -> None:
@@ -491,7 +454,7 @@ def test_bind_composite_treats_empty_string_route_key_as_absent(tmp_path: Path) 
     # carry empty route info specifically so they *would* collide under the old logic --
     # distinct-but-both-missing route keys (as in the "no derivable route key" test above)
     # wouldn't actually exercise the bug, since they'd never land in the same bucket anyway.
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         empty_route_key_api_brick = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type=None, route_key="", request={"method": "", "path": ""}
@@ -504,43 +467,43 @@ def test_bind_composite_treats_empty_string_route_key_as_absent(tmp_path: Path) 
             request={"method": "", "path": ""},
         )
         for brick in (empty_route_key_api_brick, empty_route_key_orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [empty_route_key_api_brick, empty_route_key_orm_brick],
             composite_nanobar_type="api-to-db",
             member_nanobar_types=("api-request-response", "orm-request-response"),
         )
 
         assert result.bindings_created == 0
-        assert list_nanobars(conn) == []
+        assert nanobar_repository.list_nanobars() == []
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_ignores_bricks_of_uninvolved_nanobar_types(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         validator_brick = _make_brick("rbrick-1", "sha256:one", nanobar_type="validator-request-response")
         controller_brick = _make_brick("rbrick-2", "sha256:two", nanobar_type="controller-request-response")
         orm_brick = _make_brick("rbrick-3", "sha256:three", nanobar_type="orm-request-response")
         for brick in (validator_brick, controller_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         result = bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [validator_brick, controller_brick, orm_brick],
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
         )
 
         assert result.bindings_created == 2
-        composite = next(n for n in list_nanobars(conn) if n.nanobar_type == "controller-to-db")
-        bound = get_bricks_for_nanobar(conn, composite.nanobar_id)
+        composite = next(n for n in nanobar_repository.list_nanobars() if n.nanobar_type == "controller-to-db")
+        bound = nanobar_repository.bricks_for(composite.nanobar_id)
         assert {b.regression_brick_id for b in bound} == {"rbrick-2", "rbrick-3"}
     finally:
-        conn.close()
+        session.close()
 
 
 # ------------------------------------------------- taxonomy-driven regression_weight recompute
@@ -562,40 +525,40 @@ _WEIGHT_TEST_TAXONOMY: NanobarTypeTaxonomy = {
 
 
 def test_bind_new_bricks_with_taxonomy_recomputes_weight(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         brick = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type="validator-request-response", regression_scenario_type="success"
         )
-        insert_brick(conn, brick)
+        brick_repository.create(brick)
 
-        bind_new_bricks_to_nanobars(conn, [brick], taxonomy=_WEIGHT_TEST_TAXONOMY)
+        bind_new_bricks_to_nanobars(nanobar_repository, [brick], taxonomy=_WEIGHT_TEST_TAXONOMY)
 
-        nanobar = list_nanobars(conn)[0]
+        nanobar = nanobar_repository.list_nanobars()[0]
         # 1 of 2 required scenarios covered (success, weight 1.0, out of total 1.6) * default criticality 0.5
         assert nanobar.regression_weight == pytest.approx((1.0 / 1.6) * 0.5)
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_without_taxonomy_leaves_weight_as_placeholder(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         brick = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type="validator-request-response", regression_scenario_type="success"
         )
-        insert_brick(conn, brick)
+        brick_repository.create(brick)
 
-        bind_new_bricks_to_nanobars(conn, [brick])  # no taxonomy -- unchanged behavior
+        bind_new_bricks_to_nanobars(nanobar_repository, [brick])  # no taxonomy -- unchanged behavior
 
-        nanobar = list_nanobars(conn)[0]
+        nanobar = nanobar_repository.list_nanobars()[0]
         assert nanobar.regression_weight == 0.5  # the placeholder default, never recomputed
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_new_bricks_recomputes_weight_once_per_nanobar_using_all_its_bricks(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         first = _make_brick(
             "rbrick-1", "sha256:one", nanobar_type="validator-request-response", regression_scenario_type="success"
@@ -606,20 +569,20 @@ def test_bind_new_bricks_recomputes_weight_once_per_nanobar_using_all_its_bricks
             nanobar_type="validator-request-response",
             regression_scenario_type="invalid_input",
         )
-        insert_brick(conn, first)
-        insert_brick(conn, second)
+        brick_repository.create(first)
+        brick_repository.create(second)
 
-        bind_new_bricks_to_nanobars(conn, [first, second], taxonomy=_WEIGHT_TEST_TAXONOMY)
+        bind_new_bricks_to_nanobars(nanobar_repository, [first, second], taxonomy=_WEIGHT_TEST_TAXONOMY)
 
-        nanobar = list_nanobars(conn)[0]
+        nanobar = nanobar_repository.list_nanobars()[0]
         # Both required scenarios now covered across both bricks bound to the same nanobar.
         assert nanobar.regression_weight == pytest.approx(0.5)
     finally:
-        conn.close()
+        session.close()
 
 
 def test_bind_composite_with_taxonomy_recomputes_composite_weight(tmp_path: Path) -> None:
-    conn = connect(str(tmp_path / "regression_bricks.db"))
+    session, nanobar_repository, brick_repository = _repos(tmp_path)
     try:
         controller_brick = _make_brick(
             "rbrick-1",
@@ -631,20 +594,20 @@ def test_bind_composite_with_taxonomy_recomputes_composite_weight(tmp_path: Path
             "rbrick-2", "sha256:two", nanobar_type="orm-request-response", regression_scenario_type="success"
         )
         for brick in (controller_brick, orm_brick):
-            insert_brick(conn, brick)
+            brick_repository.create(brick)
 
         # "controller-to-db" isn't itself a taxonomy entry -- unknown-type fallback applies
         # (returns the placeholder unchanged), proving the wiring runs without crashing even
         # when the composite type has no taxonomy entry of its own.
         bind_composite_nanobars(
-            conn,
+            nanobar_repository,
             [controller_brick, orm_brick],
             composite_nanobar_type="controller-to-db",
             member_nanobar_types=("controller-request-response", "orm-request-response"),
             taxonomy=_WEIGHT_TEST_TAXONOMY,
         )
 
-        composite = next(n for n in list_nanobars(conn) if n.nanobar_type == "controller-to-db")
+        composite = next(n for n in nanobar_repository.list_nanobars() if n.nanobar_type == "controller-to-db")
         assert composite.regression_weight == 0.5  # unknown type to the taxonomy -- unchanged
     finally:
-        conn.close()
+        session.close()

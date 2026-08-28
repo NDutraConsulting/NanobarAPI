@@ -1,4 +1,11 @@
-"""Resolves and opens the events SQLite database (trace/span data) for the dashboard app."""
+"""Resolves and opens the events SQLite database for the dashboard app.
+
+**Worker-registry bookkeeping only, as of `.focusari/telemetry-domain-refactor-plan-with-tasks.md`
+Decision 6** -- trace/span capture moved to its own database (`nanobar_api_telemetry.db`, see
+`telemetry_db.py`). This file's `workers`/`worker_log` tables (`NanobarWorker`'s own claim-lease
+liveness mechanism) stay here, unmigrated -- a deliberately separate concern from trace/span
+storage that happened to share a physical file before this split, not after.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +15,9 @@ from pathlib import Path
 
 from nanobar_api.eventbus.store import connect
 
-#: Default location: `app/db/events.db` -- cross-domain telemetry data (both the blog domain's
-#: own instrumentation and the nanobar-admin's trace/span capture write here), not nested under
-#: this package's own `data/` directory. Gitignored; may not exist yet or may be empty.
+#: Default location: `app/db/events.db` -- worker-registry bookkeeping only now (see module
+#: docstring), not nested under this package's own `data/` directory. Gitignored; may not exist
+#: yet or may be empty.
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "db" / "events.db"
 
 #: Environment variable used to override DEFAULT_DB_PATH (e.g. to point at a fixture in

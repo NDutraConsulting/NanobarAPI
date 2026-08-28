@@ -47,7 +47,7 @@ class NanobarORMWrapper:
     @staticmethod
     def install(engine: Engine, repository: EventQueueRepository) -> None:
         """Registers `after_cursor_execute`/`handle_error` listeners on `engine`. Each reads
-        `current_route_key` (`nanobar_api.middleware.trace`, set by `NanobarController.handle()`
+        `current_route_key` (`nanobar_api.middleware.trace`, set by `NanobarAPIController.handle()`
         for the duration of a controller call) and emits a `capture_layer(layer="orm")` event
         tagged `nanobar_type="orm-request-response"`.
 

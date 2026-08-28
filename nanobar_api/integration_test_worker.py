@@ -25,13 +25,21 @@ stopping rule than that primitive's own "race to first" motivating example (a re
 Decision, not incidental reuse; see `concurrency.py`'s own docstring and the Worker-Domain plan's
 §1 cross-reference), since every nanobar's replay should finish, not just the first.
 
-`replay_brick()` is deliberately synchronous (its own docstring: `TestClient` itself blocks, so
-there is no real `await` anywhere in its body) — offloaded to a thread via `anyio.to_thread.run_sync`
-so concurrent nanobars' replays genuinely overlap rather than serializing on the event loop.
+`ReplayBrickService.__call__` is deliberately synchronous (`httpx2.Client.request` blocks, so
+there is no real `await` anywhere in its body) — offloaded to a thread via
+`anyio.to_thread.run_sync` so concurrent nanobars' replays genuinely overlap rather than
+serializing on the event loop. Unlike the dashboard's own "Run" button (which replays against a
+persistent, isolated shadow deployment over a real network `httpx2.Client` -- see
+`app/admin/nanobar/shadow_deployment.py`), this worker replays against **its own live `self.app`
+instance**, in-process, via `starlette.testclient.TestClient` (itself a real `httpx2.Client`
+subclass, with its own sync-compatible ASGI bridge -- `httpx2.ASGITransport` is async-only and
+can't back a sync `httpx2.Client` directly) -- this worker's whole point is continuously
+self-testing the app it's actually running inside, not exercising an isolated copy; going
+through a separate shadow deployment here would test the wrong process.
 
 Each brick's replay verdict — via `evaluate_verdict()` (the same layered status/schema/
-pinned-field comparison `replay.py`'s own thin-slice checkpoint proved correct), not a naive
-equality check — is **published**, not awaited inline ("so the fanouts do not need an await"),
+pinned-field comparison the original thin-slice checkpoint proved correct) — is **published**,
+not awaited inline ("so the fanouts do not need an await"),
 onto `NanobarEventBus`; `registerRegressionBrickCallbacks()` is whatever `NanobarCallback` an app
 subscribes to that channel, not built here (no default subscriber is prescribed by the source
 spec). Every published event is tagged `synthetic: true`, mirroring the existing
@@ -53,16 +61,17 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.to_thread
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.testclient import TestClient
 
-from nanobar_api.bricks.replay import replay_brick
-from nanobar_api.bricks.schema import Nanobar
-from nanobar_api.bricks.store import get_bricks_for_nanobar, list_nanobars
-from nanobar_api.bricks.verdict import evaluate_verdict
 from nanobar_api.capture.contract import build_contracts_for_routes
 from nanobar_api.concurrency import run_until_satisfied
 from nanobar_api.eventbus.dispatch import NanobarEventBus
 from nanobar_api.eventbus.events import Event
+from nanobar_api.nanobar.model import Nanobar
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.regression_brick.regression_brick_analysis_service import ReplayBrickRequest, ReplayBrickService
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
 from nanobar_api.synthesis import SYNTHESIS_STRATEGIES, is_expected_outcome
 from nanobar_api.taxonomy import NanobarTypeTaxonomy, detect_coverage_gaps
 from nanobar_api.telemetry import NanobarTelemetry
@@ -92,6 +101,14 @@ def _stable_route_key(nanobar: Nanobar) -> tuple[str, str] | None:
 
 
 class IntegrationTestWorker(NanobarWorker):
+    """`telemetry`'s own `EventQueueRepository` must carry a `"snapshot"` channel, not just
+    `"trace"` -- `process()` constructs a `ReplayBrickService` (a real `NanobarAPIService`) per
+    sweep, whose inherited self-capture emits onto `"snapshot"` (`capture_layer()`'s own default
+    channel) on every replay. Every real app in this codebase already configures both channels
+    on its one shared `EventQueueRepository` (see `app/main.py`); this only bites a caller
+    building a narrower, single-channel repository just for this worker.
+    """
+
     config = WorkerConfig(channels=("integration-tests",), mode="cron")
 
     def __init__(
@@ -100,7 +117,7 @@ class IntegrationTestWorker(NanobarWorker):
         conn: sqlite3.Connection,
         telemetry: NanobarTelemetry,
         *,
-        bricks_conn: sqlite3.Connection,
+        bricks_session_factory: sessionmaker[Session],
         app: Starlette,
         event_bus: NanobarEventBus,
         taxonomy: NanobarTypeTaxonomy | None = None,
@@ -111,7 +128,7 @@ class IntegrationTestWorker(NanobarWorker):
         super().__init__(
             worker_id, conn, telemetry, claim_limit=claim_limit, lease_seconds=lease_seconds, log_dir=log_dir
         )
-        self.bricks_conn = bricks_conn
+        self.bricks_session_factory = bricks_session_factory
         self.app = app
         self.event_bus = event_bus
         self.taxonomy = taxonomy
@@ -122,33 +139,50 @@ class IntegrationTestWorker(NanobarWorker):
         nothing in the source spec asks for one); every claimed trigger event fans out a full
         sweep over `list_nanobars()`.
         """
-        nanobars = list_nanobars(self.bricks_conn)
+        session = self.bricks_session_factory()
+        try:
+            nanobar_repository = NanobarRepository(session)
+            nanobars = nanobar_repository.list_nanobars()
+            # In-process, no real socket -- see module docstring for why this worker replays
+            # against its own live `self.app`, not a separate shadow deployment. `TestClient`
+            # is itself a real `httpx2.Client` subclass (`starlette.testclient.TestClient(httpx.
+            # Client)`) with its own sync-compatible ASGI bridge -- `httpx2.ASGITransport` is
+            # async-only and cannot back a sync `httpx2.Client` directly.
+            analysis_service = ReplayBrickService(
+                self.telemetry, RegressionBrickRepository(session), TestClient(self.app)
+            )
 
-        async def fetch(nanobar: Nanobar) -> list[dict[str, Any]]:
-            bricks = get_bricks_for_nanobar(self.bricks_conn, nanobar.nanobar_id)
-            outcomes: list[dict[str, Any]] = []
-            for brick in bricks:
-                replayed_response = await anyio.to_thread.run_sync(replay_brick, self.app, brick)
-                verdict = evaluate_verdict(brick, replayed_response)
-                outcomes.append(
-                    {
-                        "nanobar_id": nanobar.nanobar_id,
-                        "regression_brick_id": brick.regression_brick_id,
-                        "passed": verdict.overall_passed,
-                    }
-                )
-            return outcomes
+            async def fetch(nanobar: Nanobar) -> list[dict[str, Any]]:
+                bricks = nanobar_repository.bricks_for(nanobar.nanobar_id)
+                outcomes: list[dict[str, Any]] = []
+                for brick in bricks:
+                    result = await anyio.to_thread.run_sync(
+                        analysis_service, ReplayBrickRequest(regression_brick_id=brick.regression_brick_id)
+                    )
+                    outcomes.append(
+                        {
+                            "nanobar_id": nanobar.nanobar_id,
+                            "regression_brick_id": brick.regression_brick_id,
+                            "passed": result.result.data is not None
+                            and result.result.data["verdict"]["overall_passed"],
+                        }
+                    )
+                return outcomes
 
-        def on_event(outcomes: list[dict[str, Any]]) -> None:
-            for outcome in outcomes:
-                self.event_bus.publish(INTEGRATION_TEST_RESULTS_CHANNEL, {**outcome, "synthetic": True})
+            def on_event(outcomes: list[dict[str, Any]]) -> None:
+                for outcome in outcomes:
+                    self.event_bus.publish(INTEGRATION_TEST_RESULTS_CHANNEL, {**outcome, "synthetic": True})
 
-        anyio.run(run_until_satisfied, nanobars, fetch, on_event, lambda: False)
+            anyio.run(run_until_satisfied, nanobars, fetch, on_event, lambda: False)
 
-        if self.taxonomy is not None:
-            self._fill_synthesizable_gaps(nanobars, self.taxonomy)
+            if self.taxonomy is not None:
+                self._fill_synthesizable_gaps(nanobar_repository, nanobars, self.taxonomy)
+        finally:
+            session.close()
 
-    def _fill_synthesizable_gaps(self, nanobars: list[Nanobar], taxonomy: NanobarTypeTaxonomy) -> None:
+    def _fill_synthesizable_gaps(
+        self, nanobar_repository: NanobarRepository, nanobars: list[Nanobar], taxonomy: NanobarTypeTaxonomy
+    ) -> None:
         contracts_by_route_key = {
             (contract.method.upper(), contract.path): contract
             for contract in build_contracts_for_routes(list(self.app.routes))
@@ -166,7 +200,7 @@ class IntegrationTestWorker(NanobarWorker):
             if contract is None:
                 continue
 
-            bound_bricks = get_bricks_for_nanobar(self.bricks_conn, nanobar.nanobar_id)
+            bound_bricks = nanobar_repository.bricks_for(nanobar.nanobar_id)
             gaps = detect_coverage_gaps(nanobar, bound_bricks, taxonomy)
 
             for scenario_type in gaps:

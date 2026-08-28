@@ -61,6 +61,21 @@ def _coerce(name: str, value: Any, field_type: Any) -> Any:
             raise ValidationError(errors)
         return result
 
+    if get_origin(field_type) is dict:
+        if not isinstance(value, dict):
+            raise ValidationError([f"{name}: expected an object, got {type(value).__name__}"])
+        _, value_type = get_args(field_type)
+        coerced: dict[str, Any] = {}
+        dict_errors: list[str] = []
+        for key, item in value.items():
+            try:
+                coerced[key] = _coerce(f"{name}.{key}", item, value_type)
+            except ValidationError as exc:
+                dict_errors.extend(exc.errors)
+        if dict_errors:
+            raise ValidationError(dict_errors)
+        return coerced
+
     if isinstance(field_type, type) and dataclasses.is_dataclass(field_type):
         if not isinstance(value, Mapping):
             raise ValidationError([f"{name}: expected an object, got {type(value).__name__}"])
@@ -129,6 +144,10 @@ def _type_to_schema(field_type: Any) -> dict[str, Any]:
     if get_origin(field_type) is list:
         (item_type,) = get_args(field_type)
         return {"type": "array", "items": _type_to_schema(item_type)}
+
+    if get_origin(field_type) is dict:
+        _, value_type = get_args(field_type)
+        return {"type": "object", "additionalProperties": _type_to_schema(value_type)}
 
     if isinstance(field_type, type) and dataclasses.is_dataclass(field_type):
         return to_json_schema(field_type)

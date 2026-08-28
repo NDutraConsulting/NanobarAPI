@@ -1,12 +1,14 @@
-"""Resolves and opens the regression-bricks SQLite database for the dashboard app."""
+"""Resolves the regression-bricks SQLite database path for the dashboard app -- session-factory
+construction itself lives in `nanobar_api.persistence.build_session_factory` (shared by
+`NanobarRepository`/`RegressionBrickRepository`), built once at app startup and stored on
+`app.state.bricks_session_factory` (see `app/main.py`), same convention as
+`app/db/blog_session.py`'s `blog_session_factory`.
+"""
 
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
-
-from nanobar_api.bricks.store import connect
 
 #: Default location: `app/admin/nanobar/data/regression_bricks.db`, alongside the code that
 #: owns it -- gitignored and also populated by a separate seed script; it may not exist yet or
@@ -19,18 +21,11 @@ DB_PATH_ENV_VAR = "NANOBAR_REGRESSION_BRICKS_DB"
 
 
 def resolve_db_path() -> str:
-    """Returns the configured regression-bricks db path: env var if set, else the default."""
-    return os.environ.get(DB_PATH_ENV_VAR, str(DEFAULT_DB_PATH))
-
-
-def get_connection(db_path: str) -> sqlite3.Connection:
-    """Opens a fresh connection to the regression-bricks database at `db_path`.
-
-    `store.connect()` creates the schema idempotently whenever the database file or its
-    tables don't exist yet, so a not-yet-seeded (or entirely missing) database still opens
-    cleanly and simply shows up empty, rather than crashing. The parent directory is created
-    first in case it doesn't exist either — `sqlite3.connect()` creates the file but not its
+    """Returns the configured regression-bricks db path: env var if set, else the default. The
+    parent directory is created first, matching every other `resolve_db_path()` in this package
+    -- `build_session_factory()`'s underlying `create_engine()` creates the file but not its
     containing directory.
     """
+    db_path = os.environ.get(DB_PATH_ENV_VAR, str(DEFAULT_DB_PATH))
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    return connect(db_path)
+    return db_path

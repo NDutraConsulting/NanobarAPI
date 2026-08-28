@@ -1,4 +1,4 @@
-"""Service layer for the blog domain -- each `NanobarService` subclass is one distinct business
+"""Service layer for the blog domain -- each `NanobarAPIService` subclass is one distinct business
 operation, mirroring `tests/test_validator_gate.py`'s `GreetController`/`GreetGate` worked
 example scaled to a real multi-route domain. Backed by `app/crud/blog_crud.py`.
 """
@@ -12,7 +12,7 @@ from app.crud.blog_crud import AppointmentRepository, NotificationRepository, Po
 from app.libraries.blog_serializer import appointment_to_dict, notification_to_dict, post_to_dict
 from app.models.blog_model import PostStateFields
 from nanobar_api.eventbus.dispatch import NanobarEventBus
-from nanobar_api.services import NanobarService, ServiceResult, ServiceResultBody
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService, ServiceResult, ServiceResultBody
 from nanobar_api.telemetry import NanobarTelemetry
 
 
@@ -25,7 +25,7 @@ class CreatePostRequest:
     scheduled_at: str | None = None
 
 
-class CreatePostService(NanobarService):
+class CreatePostService(NanobarAPIService):
     """Creates a post as a draft, or -- when `scheduled_at` is given -- validates and applies
     the `draft -> scheduled` transition through `PostStateFields`' declared state machine (not
     a bare field assignment) before persisting."""
@@ -57,7 +57,7 @@ class UpdatePostRequest:
     body: str
 
 
-class UpdatePostService(NanobarService):
+class UpdatePostService(NanobarAPIService):
     """Overwrites an existing post's title/body in place -- no state-machine involvement (unlike
     `CreatePostService`'s `scheduled_at` branch), since editing content doesn't change `status`.
     Same not-found shape as `MarkNotificationReadService`: a missing id is a real business
@@ -87,7 +87,7 @@ class BookAppointmentRequest:
     note: str = ""
 
 
-class BookAppointmentService(NanobarService):
+class BookAppointmentService(NanobarAPIService):
     """Books the appointment, then publishes a `domain.appointments` event rather than doing
     anything about the notification itself -- `app/services/blog_notification_callback.py`'s
     `NanobarCallback` subscriber does that asynchronously. The one real, non-test consumer of
@@ -124,7 +124,7 @@ class MarkNotificationReadRequest:
     notification_id: str
 
 
-class MarkNotificationReadService(NanobarService):
+class MarkNotificationReadService(NanobarAPIService):
     """The one operation here with a real business-outcome failure a validator can't catch by
     shape alone (the id is a well-formed string either way) -- genuinely needs a DB lookup."""
 

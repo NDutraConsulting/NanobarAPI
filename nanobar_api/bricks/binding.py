@@ -5,8 +5,8 @@ creating the `Nanobar` row on first sight.
 
 **A deliberate deviation from the source spec, not what its own checklist literally names.**
 `.focusari/nanobar_APIDomain_abstract_class_buildplan-with-tasks.md` calls for two separate
-things: (a) real-time auto-registration inside `NanobarValidatorGate.__call__`/
-`NanobarController.handle`, and (b) "the first real `'trace'` `match_method` implementation" —
+things: (a) real-time auto-registration inside `NanobarAPIValidatorGate.__call__`/
+`NanobarAPIController.handle`, and (b) "the first real `'trace'` `match_method` implementation" —
 correlating bricks by shared `trace_id`. Neither is what this module does, for real reasons:
 
 - Real-time registration would need request-time access to the *bricks* database (a second,
@@ -26,120 +26,26 @@ shape), keyed by the direct `(nanobar_type, route_key)` pair already stamped on 
 automatic. A real `"trace"`-based matcher, for boundaries without a natural route key (e.g. an
 event-to-subscriber capture), remains unbuilt — this covers the REST validator/controller case
 this session actually built, not the fully general one the checklist named.
+
+**Atomic get-or-create + binding now live on `NanobarRepository`/`RegressionBrickRepository`
+directly** (`nanobar_api/nanobar/repository.py`'s `get_or_create_by_route_key`/`bind_brick`,
+`nanobar_api/regression_brick/repository.py`) -- this module is now a thin orchestration layer
+over those two repositories' `Session`, not its own transaction-control/raw-SQL implementation.
 """
 
 from __future__ import annotations
 
-import json
-import sqlite3
-import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from nanobar_api.bricks.schema import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick
-from nanobar_api.bricks.store import (
-    bind_brick_to_nanobar,
-    get_bricks_for_nanobar,
-    get_nanobar,
-    insert_nanobar,
-    set_regression_weight,
-)
+from nanobar_api.nanobar.model import Nanobar, NanobarBrickBinding
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.regression_brick.model import RegressionBrick
 
 if TYPE_CHECKING:
-    # Deferred: nanobar_api.taxonomy itself imports nanobar_api.bricks.schema, which --
-    # importing any submodule of a package always runs that package's __init__.py first --
-    # would otherwise be a circular import at `bricks/__init__.py` load time (it imports this
-    # module). `from __future__ import annotations` (above) makes annotations lazy strings, so
-    # this import is only needed for type checkers, never at runtime.
     from nanobar_api.taxonomy import NanobarTypeTaxonomy
 
 _MATCHER_VERSION = "v1"
-_DEFAULT_TARGET_TYPE = "route"
-
-
-def _find_nanobar_by_route_key(
-    conn: sqlite3.Connection, *, nanobar_type: str, route_key: str, target_type: str
-) -> Nanobar | None:
-    """O(n) over nanobars of this `nanobar_type` — `monitor_target_refs` is a JSON list, not a
-    queryable scalar column, so there's no native index to look this up by directly (a real,
-    unaddressed schema question also covered by this doc's Open Decision 3 on where captured
-    middleware metadata should live — the same "JSON list isn't indexable" shape). Fine at
-    today's scale; a real cost once one `nanobar_type` accumulates many nanobars.
-    """
-    rows = conn.execute(
-        "SELECT nanobar_id, monitor_target_refs_json FROM nanobars WHERE nanobar_type = ?", (nanobar_type,)
-    ).fetchall()
-    for nanobar_id, refs_json in rows:
-        refs = json.loads(refs_json)
-        if any(ref["target_type"] == target_type and ref["stable_name"] == route_key for ref in refs):
-            nanobar = get_nanobar(conn, nanobar_id)
-            assert nanobar is not None
-            return nanobar
-    return None
-
-
-def get_or_create_nanobar_by_route_key(
-    conn: sqlite3.Connection,
-    *,
-    nanobar_type: str,
-    route_key: str,
-    system_name: str = "unknown",
-    system_version: str = "0.0.0",
-    target_type: str = _DEFAULT_TARGET_TYPE,
-    created_by: str = "auto-registration",
-    domain: str | None = None,
-) -> tuple[Nanobar, bool]:
-    """Idempotent get-or-create keyed by `(nanobar_type, route_key)`. Returns `(nanobar,
-    was_created)` — the caller (`bind_new_bricks_to_nanobars` below) needs to know which, to
-    report an accurate creation count without a second, redundant lookup.
-
-    Wraps the select-then-insert in a `BEGIN IMMEDIATE` transaction — the same atomic-claim
-    discipline `eventbus/store.py`'s `claim_events()` established for the same reason: two
-    concurrent first-sights of the same route must not race into two `Nanobar` rows. A native SQL
-    `ON CONFLICT` (matching `set_review_status`/`set_brick_scenario`'s pattern elsewhere in this
-    codebase) isn't available here — there's no unique index on `(nanobar_type, route_key)` to
-    conflict against, since `route_key` lives inside a JSON list column, not a scalar one.
-
-    Placeholder metadata for a newly-created row matches `examples/seed_kahnban_bricks.py`'s own
-    established convention exactly, not a new guess: `regression_weight=0.5`,
-    `endpoint_scenario_frequency={"state": "unmeasured"}`, `request_object_id`/
-    `response_object_id` derived as `f"req-{route_key}"`/`f"res-{route_key}"`.
-
-    `domain`, when given, is stamped on a newly-created row only (an existing nanobar's domain
-    is left untouched by this function -- see `nanobar_api.bricks.store.set_nanobar_domain` for
-    correcting one after the fact). This function itself stays manifest-agnostic: callers that
-    know a route's owning domain (e.g. from `nanobar_api.route_manifest`) pass it straight
-    through; callers that don't just leave it `None`, same as before this parameter existed.
-    """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        existing = _find_nanobar_by_route_key(
-            conn, nanobar_type=nanobar_type, route_key=route_key, target_type=target_type
-        )
-        if existing is not None:
-            conn.commit()
-            return existing, False
-
-        nanobar = Nanobar(
-            nanobar_id=f"nb-{uuid.uuid4().hex[:12]}",
-            schema_version="1.0",
-            system_name=system_name,
-            system_version=system_version,
-            nanobar_type=nanobar_type,
-            request_object_id=f"req-{route_key}",
-            response_object_id=f"res-{route_key}",
-            regression_weight=0.5,
-            endpoint_scenario_frequency={"state": "unmeasured"},
-            created_by=created_by,
-            monitor_target_refs=[MonitorTargetRef(target_type=target_type, stable_name=route_key)],
-            domain=domain,
-        )
-        insert_nanobar(conn, nanobar)
-        conn.commit()
-        return nanobar, True
-    except BaseException:
-        conn.rollback()
-        raise
 
 
 @dataclass(frozen=True)
@@ -149,23 +55,23 @@ class BindingResult:
     skipped: int  # bricks with no nanobar_type/route_key stamped -- not everything is bindable
 
 
-def _recompute_weight(conn: sqlite3.Connection, nanobar_id: str, taxonomy: NanobarTypeTaxonomy) -> None:
+def _recompute_weight(nanobar_repository: NanobarRepository, nanobar_id: str, taxonomy: NanobarTypeTaxonomy) -> None:
     """Taxonomy plan §4: "recomputed, not stored-then-forgotten" — re-run whenever a new brick
     binds to a nanobar. Reads the nanobar's *current* full set of bound bricks (not just the ones
     from this batch), so a weight recomputed after binding call N reflects every brick bound so
     far, not only the newest ones.
     """
-    from nanobar_api.taxonomy import compute_regression_weight  # deferred -- see the TYPE_CHECKING import above
+    from nanobar_api.taxonomy import compute_regression_weight  # deferred -- avoids a taxonomy<->binding cycle
 
-    nanobar = get_nanobar(conn, nanobar_id)
+    nanobar = nanobar_repository.get(nanobar_id)
     assert nanobar is not None
-    bound_bricks = get_bricks_for_nanobar(conn, nanobar_id)
+    bound_bricks = nanobar_repository.bricks_for(nanobar_id)
     weight = compute_regression_weight(nanobar, bound_bricks, taxonomy)
-    set_regression_weight(conn, nanobar_id, weight)
+    nanobar_repository.set_regression_weight(nanobar_id, weight)
 
 
 def bind_new_bricks_to_nanobars(
-    conn: sqlite3.Connection,
+    nanobar_repository: NanobarRepository,
     bricks: list[RegressionBrick],
     *,
     system_name: str = "unknown",
@@ -173,6 +79,7 @@ def bind_new_bricks_to_nanobars(
     matched_by: str = "auto-registration",
     taxonomy: NanobarTypeTaxonomy | None = None,
     route_key_domains: dict[str, str] | None = None,
+    route_key_app_boxes: dict[str, str] | None = None,
 ) -> BindingResult:
     """Bind each of `bricks` (typically `generate_bricks()`'s return value) to a `Nanobar` row,
     creating one if this is the first brick ever seen for its `(nanobar_type, route_key)` pair.
@@ -187,7 +94,9 @@ def bind_new_bricks_to_nanobars(
     nanobar for it should be stamped with (typically built from `nanobar_api.route_manifest.
     load_route_manifest()` by the caller) -- a route with no entry in this mapping (or when the
     mapping itself is omitted) just creates the nanobar with `domain=None`, unchanged from before
-    this parameter existed.
+    this parameter existed. `route_key_app_boxes` is `route_key_domains`'s exact counterpart for
+    `app_box` -- independent mapping, independent default (`None`), same "newly-created row only"
+    stamping rule.
     """
     nanobars_created = 0
     bindings_created = 0
@@ -205,20 +114,19 @@ def bind_new_bricks_to_nanobars(
         key = (nanobar_type, route_key)
         nanobar = resolved.get(key)
         if nanobar is None:
-            nanobar, was_created = get_or_create_nanobar_by_route_key(
-                conn,
+            nanobar, was_created = nanobar_repository.get_or_create_by_route_key(
                 nanobar_type=nanobar_type,
                 route_key=route_key,
                 system_name=system_name,
                 system_version=system_version,
                 created_by=matched_by,
                 domain=route_key_domains.get(route_key) if route_key_domains else None,
+                app_box=route_key_app_boxes.get(route_key) if route_key_app_boxes else None,
             )
             nanobars_created += int(was_created)
             resolved[key] = nanobar
 
-        bind_brick_to_nanobar(
-            conn,
+        nanobar_repository.bind_brick(
             NanobarBrickBinding(
                 nanobar_id=nanobar.nanobar_id,
                 regression_brick_id=brick.regression_brick_id,
@@ -226,14 +134,14 @@ def bind_new_bricks_to_nanobars(
                 matcher_version=_MATCHER_VERSION,
                 matched_by=matched_by,
                 confidence=1.0,
-            ),
+            )
         )
         bindings_created += 1
         touched_nanobar_ids.add(nanobar.nanobar_id)
 
     if taxonomy is not None:
         for nanobar_id in touched_nanobar_ids:
-            _recompute_weight(conn, nanobar_id, taxonomy)
+            _recompute_weight(nanobar_repository, nanobar_id, taxonomy)
 
     return BindingResult(nanobars_created=nanobars_created, bindings_created=bindings_created, skipped=skipped)
 
@@ -266,7 +174,7 @@ def _effective_nanobar_type(brick: RegressionBrick) -> str:
 
 
 def bind_composite_nanobars(
-    conn: sqlite3.Connection,
+    nanobar_repository: NanobarRepository,
     bricks: list[RegressionBrick],
     *,
     composite_nanobar_type: str,
@@ -307,8 +215,7 @@ def bind_composite_nanobars(
         if not all(member_type in members for member_type in member_nanobar_types):
             continue
 
-        nanobar, was_created = get_or_create_nanobar_by_route_key(
-            conn,
+        nanobar, was_created = nanobar_repository.get_or_create_by_route_key(
             nanobar_type=composite_nanobar_type,
             route_key=route_key,
             system_name=system_name,
@@ -319,8 +226,7 @@ def bind_composite_nanobars(
         touched_nanobar_ids.add(nanobar.nanobar_id)
 
         for brick in members.values():
-            bind_brick_to_nanobar(
-                conn,
+            nanobar_repository.bind_brick(
                 NanobarBrickBinding(
                     nanobar_id=nanobar.nanobar_id,
                     regression_brick_id=brick.regression_brick_id,
@@ -328,13 +234,13 @@ def bind_composite_nanobars(
                     matcher_version=_MATCHER_VERSION,
                     matched_by=matched_by,
                     confidence=1.0,
-                ),
+                )
             )
             bound_brick_ids.add(brick.regression_brick_id)
 
     if taxonomy is not None:
         for nanobar_id in touched_nanobar_ids:
-            _recompute_weight(conn, nanobar_id, taxonomy)
+            _recompute_weight(nanobar_repository, nanobar_id, taxonomy)
 
     return BindingResult(
         nanobars_created=nanobars_created,

@@ -2,8 +2,8 @@
 services or controllers" (`.focusari/nanobar_ServiceDomain_abstract_class_buildplan-with-tasks.md`
 §1.3). Python has no clean, cheap way to enforce this at runtime without inspecting the call
 stack on every call or building a mediating DI container this project doesn't otherwise need, so
-it's a static, `ast`-based scan instead: no module that defines a `NanobarService` subclass may
-itself construct a `NanobarService`/`NanobarController`, or any *subclass* of either — a
+it's a static, `ast`-based scan instead: no module that defines a `NanobarAPIService` subclass may
+itself construct a `NanobarAPIService`/`NanobarAPIController`, or any *subclass* of either — a
 transitive closure computed across every scanned file first, not just the two literal base names,
 since real violations construct concrete subclasses (`PaymentService()`), never the abstract base
 directly.
@@ -20,7 +20,7 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-_SEED_BANNED = frozenset({"NanobarService", "NanobarController"})
+_SEED_BANNED = frozenset({"NanobarAPIService", "NanobarAPIController"})
 
 
 def _base_name(base: ast.expr) -> str | None:
@@ -46,13 +46,13 @@ def _direct_base_names(node: ast.ClassDef) -> set[str]:
 
 def _defines_nanobar_service_subclass(tree: ast.AST) -> bool:
     return any(
-        isinstance(node, ast.ClassDef) and "NanobarService" in _direct_base_names(node) for node in ast.walk(tree)
+        isinstance(node, ast.ClassDef) and "NanobarAPIService" in _direct_base_names(node) for node in ast.walk(tree)
     )
 
 
 def _collect_banned_construction_targets(trees: Iterable[ast.AST]) -> frozenset[str]:
     """Transitive closure of every class name (across all scanned files) that subclasses
-    `NanobarService`/`NanobarController`, directly or through intermediate subclasses."""
+    `NanobarAPIService`/`NanobarAPIController`, directly or through intermediate subclasses."""
     class_bases: dict[str, set[str]] = {}
     for tree in trees:
         for node in ast.walk(tree):
@@ -72,7 +72,7 @@ def _collect_banned_construction_targets(trees: Iterable[ast.AST]) -> frozenset[
 
 def check_service_boundaries(paths: Iterable[Path]) -> list[str]:
     """Returns one human-readable violation string per disallowed construction found, empty if
-    clean. Files that don't define a `NanobarService` subclass at all are skipped when scanning
+    clean. Files that don't define a `NanobarAPIService` subclass at all are skipped when scanning
     for violations — the rule only applies *inside* such a module, not to code that merely
     imports one — but every file is still parsed once to build the cross-file banned-name set.
     """
@@ -88,7 +88,7 @@ def check_service_boundaries(paths: Iterable[Path]) -> list[str]:
             if isinstance(node, ast.Call):
                 name = _call_name(node.func)
                 if name in banned:
-                    violations.append(f"{path}:{node.lineno}: constructs {name}() inside a NanobarService module")
+                    violations.append(f"{path}:{node.lineno}: constructs {name}() inside a NanobarAPIService module")
     return violations
 
 

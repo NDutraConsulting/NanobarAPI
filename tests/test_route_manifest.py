@@ -46,11 +46,16 @@ def test_build_route_manifest_flattens_nested_mounts_and_root_routes() -> None:
 
     by_key = {e.route_key: e for e in entries}
     assert by_key["GET /admin/nanobar/dashboard"] == RouteManifestEntry(
-        domain="admin/nanobar", method="GET", path="/admin/nanobar/dashboard", route_key="GET /admin/nanobar/dashboard"
+        domain="admin/nanobar",
+        app_box="admin/nanobar",
+        method="GET",
+        path="/admin/nanobar/dashboard",
+        route_key="GET /admin/nanobar/dashboard",
     )
     assert "PATCH /admin/nanobar/nanobars/{nanobar_id}" in by_key
     assert "GET /admin/nanobar/nanobars/{nanobar_id}" in by_key
-    assert by_key["GET /"] == RouteManifestEntry(domain="", method="GET", path="/", route_key="GET /")
+    # An un-mounted route's app_box falls back to "api" -- unlike domain, which stays "".
+    assert by_key["GET /"] == RouteManifestEntry(domain="", app_box="api", method="GET", path="/", route_key="GET /")
 
 
 def test_build_route_manifest_excludes_head_as_a_distinct_entry() -> None:
@@ -89,7 +94,7 @@ def test_write_and_load_route_manifest_round_trips(tmp_path: Path) -> None:
     loaded = load_route_manifest(out_path)
 
     assert written == loaded
-    assert loaded == [RouteManifestEntry(domain="", method="GET", path="/ping", route_key="GET /ping")]
+    assert loaded == [RouteManifestEntry(domain="", app_box="api", method="GET", path="/ping", route_key="GET /ping")]
 
 
 def test_write_route_manifest_document_has_generated_at(tmp_path: Path) -> None:

@@ -20,7 +20,13 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from app.core.config import WEB_DIR
-from nanobar_api.admin_auth import ADMIN_SESSION_COOKIE, SessionBackend, SQLiteAdminUserStore, csrf_protected
+from nanobar_api.admin_auth import (
+    ADMIN_SESSION_COOKIE,
+    CSRF_COOKIE_NAME,
+    SessionBackend,
+    SQLiteAdminUserStore,
+    csrf_protected,
+)
 from nanobar_api.envelope import error, success
 
 #: How long an established session (authenticated or not) stays valid before needing a fresh
@@ -41,6 +47,17 @@ def build_routes(*, backend: SessionBackend, user_store: SQLiteAdminUserStore) -
             response.set_cookie(
                 ADMIN_SESSION_COOKIE, record.session_id, httponly=True, samesite="lax", path="/admin/app"
             )
+            # Self-heal a real, previously-shipped bug: an earlier build of this route set
+            # ADMIN_SESSION_COOKIE (and the CSRF cookie) with no `path=` at all (defaulting to
+            # "/"), before this surface's own "/admin/app" path-scoping existed. Any browser
+            # that ever loaded that old login page is still carrying those root-scoped cookies
+            # alongside the new path-scoped ones -- the browser sends both on every request
+            # here, and `request.cookies.get(...)` below only keeps one of them (whichever the
+            # dict-building parser saw last), indistinguishable from a real expired/unknown
+            # session. Explicitly expiring the root-scoped cookies here clears them out of the
+            # browser's jar on the very next login-page visit, rather than colliding forever.
+            response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+            response.delete_cookie(CSRF_COOKIE_NAME, path="/")
             return response
 
         session_id = request.cookies.get(ADMIN_SESSION_COOKIE)

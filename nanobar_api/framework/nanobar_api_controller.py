@@ -1,4 +1,4 @@
-"""`NanobarController` — replaces the empty `class Controller: pass` stub in place, no
+"""`NanobarAPIController` — replaces the empty `class Controller: pass` stub in place, no
 back-compat shim (nothing in the codebase constructed the old stub — confirmed via grep).
 
 Per `.focusari/nanobar_APIDomain_abstract_class_buildplan-with-tasks.md` §2.3: the third of the
@@ -19,7 +19,28 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
 
-class NanobarController(ABC):
+class NanobarAPIError(Exception):
+    """A controller-level business-outcome failure that carries a real HTTP status code -- "no
+    such resource" (404), "conflict" (409), and so on. Raise this (never a raw `starlette.
+    responses.Response`, which `capture_layer()`'s `to_payload_dict()` can't serialize) from
+    `run_etl_workflow()`/`build_response()` for any outcome that isn't a plain success.
+
+    `NanobarAPIValidatorGate.__call__` catches this (mapping `status_code` straight through) and
+    any other exception a controller raises (mapped to 500) once it calls `controller.handle()`,
+    turning either into a real `nanobar_api.envelope.error()` JSON response -- the validator/
+    controller pipeline always hands the router layer back a real `Response`, never lets an
+    exception propagate up to it. A concrete subclass typically hardcodes its own status code in
+    `__init__` (e.g. `class NotFoundError(NanobarAPIError): def __init__(self, message): super().
+    __init__(message, status_code=404)`), so call sites just do `raise NotFoundError(msg)` --
+    matching every "NotFoundError"-style exception already in this codebase.
+    """
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class NanobarAPIController(ABC):
     def __init__(self, request: Request, request_type: str) -> None:
         self.request = request
         self.request_type = request_type
@@ -51,10 +72,14 @@ class NanobarController(ABC):
         `controller-request-response` brick via `capture_layer()`.
 
         Controller-level failures (an exception from `run_etl_workflow()`/`build_response()`)
-        are deliberately not caught here — the source spec doesn't design a controller-layer
-        failure-capture path the way `NanobarValidatorGate` explicitly does for
-        `ValidationError`, so this doesn't invent one; the exception propagates uncaught,
-        producing a real 500 with no controller-layer brick for that call. Flagged, not solved.
+        are not caught *here* -- they propagate uncaught out of this method, same as always. The
+        catch lives one call frame up, in `NanobarAPIValidatorGate.__call__` (which is what
+        actually invokes `handle()`), so it can turn a `NanobarAPIError`/any other exception into
+        a real HTTP response for the router layer either way. One real, still-open gap from that
+        split: no `controller-request-response` brick is captured for a failed call -- capture
+        only happens on the success path below, after `build_response()` returns cleanly, and
+        this method still has no failure-capture path of its own (unlike `NanobarAPIValidatorGate`'s
+        explicit `ValidationError` capture). Flagged, not solved.
 
         Also sets `current_route_key` (`nanobar_api.middleware.trace`) for the duration of the
         call, reset in a `finally` — `nanobar_api.orm.NanobarORMWrapper`'s SQLAlchemy listeners

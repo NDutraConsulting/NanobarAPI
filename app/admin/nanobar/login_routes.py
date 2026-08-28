@@ -20,7 +20,13 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from app.core.config import WEB_DIR
-from nanobar_api.admin_auth import ADMIN_SESSION_COOKIE, SessionBackend, SQLiteAdminUserStore, csrf_protected
+from nanobar_api.admin_auth import (
+    ADMIN_SESSION_COOKIE,
+    CSRF_COOKIE_NAME,
+    SessionBackend,
+    SQLiteAdminUserStore,
+    csrf_protected,
+)
 from nanobar_api.envelope import error, success
 
 #: How long an established session (authenticated or not) stays valid before needing a fresh
@@ -41,6 +47,20 @@ def build_routes(*, backend: SessionBackend, user_store: SQLiteAdminUserStore) -
             response.set_cookie(
                 ADMIN_SESSION_COOKIE, record.session_id, httponly=True, samesite="lax", path="/admin/nanobar"
             )
+            # Self-heal a real, previously-shipped bug: an earlier build of this route set
+            # ADMIN_SESSION_COOKIE with no `path=` at all (defaulting to "/"), before this
+            # path-scoping existed. Any browser that ever loaded that old login page is still
+            # carrying that root-scoped cookie alongside this one -- the browser sends both on
+            # every request here, and `request.cookies.get(...)` below only keeps one of them
+            # (whichever the dict-building parser saw last), which is indistinguishable from a
+            # real expired/unknown session. Explicitly expiring the root-scoped cookie here
+            # clears it out of the browser's jar on the very next login-page visit, rather than
+            # leaving it to silently collide forever.
+            response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+            # Same self-heal for CSRF_COOKIE_NAME: the same old commit also ran csrf_protected()
+            # with no cookie_path (defaulting to "/") before this surface's own "/admin/nanobar"
+            # scoping existed -- a browser could be carrying a stale root-scoped CSRF cookie too.
+            response.delete_cookie(CSRF_COOKIE_NAME, path="/")
             return response
 
         session_id = request.cookies.get(ADMIN_SESSION_COOKIE)

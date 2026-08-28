@@ -280,6 +280,13 @@ body {
   color: var(--color-primary);
 }
 
+.nanobar-endpoint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
 .nanobar-system {
   font-size: 0.95rem;
   font-weight: 600;

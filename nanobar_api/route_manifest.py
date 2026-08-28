@@ -36,6 +36,17 @@ class RouteManifestEntry:
     #: stripped), e.g. `"admin/nanobar"`; `""` for a route registered directly on the app with
     #: no enclosing `Mount` at all.
     domain: str
+    #: Same Mount-derived value as `domain`, additive alongside it (per `.focusari/appbox-plan-
+    #: with-tasks.md`) -- the one difference: an un-mounted route (`domain == ""`) gets a real,
+    #: non-blank classification (`"api"`) instead of staying blank. `domain` itself, and every
+    #: caller already depending on its exact current values (`Nanobar.domain`, replay/binding),
+    #: is completely untouched -- this is a second, purely additive field computed from the same
+    #: walk, not a replacement. App-specific refinement (e.g. recognizing `/admin/app/login` as
+    #: its own `"admin/app"` box even though it isn't Mount-wrapped) is deliberately left to
+    #: whichever app consumes this manifest (`app/admin/nanobar/nanobar_refresh.py`), not guessed
+    #: at here -- this framework-level default only knows about Mount structure, never URL
+    #: prefixes, since a URL scheme is app-specific by nature.
+    app_box: str
     method: str
     #: Full path, including the domain prefix, e.g. `"/admin/nanobar/dashboard"`.
     path: str
@@ -63,7 +74,13 @@ def _walk(routes: list[BaseRoute], prefix: str, domain: str) -> list[RouteManife
                 if method == "HEAD":
                     continue  # implicitly added by Starlette alongside GET, not a real distinct route
                 entries.append(
-                    RouteManifestEntry(domain=domain, method=method, path=full_path, route_key=f"{method} {full_path}")
+                    RouteManifestEntry(
+                        domain=domain,
+                        app_box=domain or "api",
+                        method=method,
+                        path=full_path,
+                        route_key=f"{method} {full_path}",
+                    )
                 )
         else:  # pragma: no cover - defensive: only exotic BaseRoute subclasses (e.g. Host) reach here
             continue

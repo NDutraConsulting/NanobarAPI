@@ -4,8 +4,8 @@ event ends up on, plus post creation/editing and marking notifications read.
 
 Read-only routes (the dashboard page itself, `GET .../posts`, `GET .../notifications`) are plain
 handlers reading the repository layer directly, matching `admin/nanobar/api.py`'s own established
-convention for simple reads. The mutating routes go through the full `NanobarValidatorGate` ->
-`NanobarController` -> `NanobarService` pipeline (`app`'s `gates.py`/`controllers.py`/`services.py`)
+convention for simple reads. The mutating routes go through the full `NanobarAPIValidatorGate` ->
+`NanobarAPIController` -> `NanobarAPIService` pipeline (`app`'s `gates.py`/`controllers.py`/`services.py`)
 -- real validation and business logic live there, unlike the plain reads.
 """
 
@@ -19,15 +19,16 @@ from starlette.routing import Mount, Route
 
 from app.core.config import WEB_DIR
 from app.crud.blog_crud import NotificationRepository, PostRepository
+from app.db.blog_session import resolve_session_factory as resolve_blog_session_factory
 from app.libraries.blog_serializer import notification_to_dict, post_to_dict
 from app.validators.blog_validator_gateway import CreatePostGate, MarkNotificationReadGate, UpdatePostGate
 from nanobar_api.admin_auth import SessionBackend, session_protected
 from nanobar_api.envelope import error, success
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.routing import adapt_handler
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 
-def _gate_endpoint(gate_cls: type[NanobarValidatorGate], request_type: str) -> Any:
+def _gate_endpoint(gate_cls: type[NanobarAPIValidatorGate], request_type: str) -> Any:
     """Same shape as `nanobar_api.routing`'s own (leading-underscore, private) `_gate_endpoint`
     -- reproduced locally rather than importing a private symbol across a package boundary."""
 
@@ -46,7 +47,7 @@ async def _edit_post_page(request: Request) -> Response:
 
 
 async def _list_posts(request: Request) -> Response:
-    session = request.app.state.blog_session_factory()
+    session = resolve_blog_session_factory(request)()
     try:
         posts = PostRepository(session).list_all()
         return JSONResponse(success([post_to_dict(p) for p in posts], type_="array"))
@@ -58,7 +59,7 @@ async def _get_post(request: Request) -> Response:
     # Unlike blog_public_routes.py's _get_post, this doesn't filter by status -- the admin has
     # to be able to open a draft or scheduled post's edit page, not just published ones.
     post_id = request.path_params["post_id"]
-    session = request.app.state.blog_session_factory()
+    session = resolve_blog_session_factory(request)()
     try:
         post = PostRepository(session).get(post_id)
         if post is None:
@@ -69,7 +70,7 @@ async def _get_post(request: Request) -> Response:
 
 
 async def _list_notifications(request: Request) -> Response:
-    session = request.app.state.blog_session_factory()
+    session = resolve_blog_session_factory(request)()
     try:
         notifications = NotificationRepository(session).list_all()
         return JSONResponse(success([notification_to_dict(n) for n in notifications], type_="array"))

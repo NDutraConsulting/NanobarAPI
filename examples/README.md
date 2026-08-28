@@ -63,8 +63,8 @@ repositories, models]`:
   **[`app/models/`](../app/models/)**, **[`app/libraries/`](../app/libraries/)**,
   **[`app/db/`](../app/db/)** — the blog/booking domain's own business logic (`blog_*.py` in
   each), used by both `app/api/routes/blog.py` and `app/admin/app/` below. This is the actual
-  "real app built on the framework" example: full `NanobarValidatorGate` → `NanobarController`
-  → `NanobarService` → `NanobarRepository` pipeline, `NanobarEventBus` pub/sub, and a
+  "real app built on the framework" example: full `NanobarAPIValidatorGate` → `NanobarAPIController`
+  → `NanobarAPIService` → `NanobarAPIRepository` pipeline, `NanobarEventBus` pub/sub, and a
   `NanobarWorker`-adjacent background sweep.
 - **[`app/api/routes/blog.py`](../app/api/routes/blog.py)** — the public-facing routes on top
   of it (`/`, `/posts/{slug}`, `/book-appointment`), no session gate.

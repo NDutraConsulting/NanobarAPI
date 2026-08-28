@@ -17,14 +17,15 @@ from starlette.routing import Route
 
 from app.core.config import WEB_DIR
 from app.crud.blog_crud import PostRepository
+from app.db.blog_session import resolve_session_factory as resolve_blog_session_factory
 from app.libraries.blog_serializer import post_to_dict
 from app.validators.blog_validator_gateway import BookAppointmentGate
 from nanobar_api.envelope import error, success
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.routing import adapt_handler
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 
-def _gate_endpoint(gate_cls: type[NanobarValidatorGate], request_type: str) -> Any:
+def _gate_endpoint(gate_cls: type[NanobarAPIValidatorGate], request_type: str) -> Any:
     async def endpoint(request: Request) -> Any:
         return await gate_cls()(request, request_type)
 
@@ -44,7 +45,7 @@ async def _book_appointment_page(request: Request) -> Response:
 
 
 async def _list_published_posts(request: Request) -> Response:
-    session = request.app.state.blog_session_factory()
+    session = resolve_blog_session_factory(request)()
     try:
         posts = PostRepository(session).list_published()
         return JSONResponse(success([post_to_dict(p) for p in posts], type_="array"))
@@ -54,7 +55,7 @@ async def _list_published_posts(request: Request) -> Response:
 
 async def _get_post(request: Request) -> Response:
     post_id = request.path_params["post_id"]
-    session = request.app.state.blog_session_factory()
+    session = resolve_blog_session_factory(request)()
     try:
         post = PostRepository(session).get(post_id)
         if post is None or post.status != "published":

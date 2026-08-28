@@ -20,6 +20,8 @@ import {
   populateNanobarTypeFilter,
   populateDomainFilter,
   ALL_DOMAINS_VALUE,
+  populateAppBoxFilter,
+  ALL_APP_BOXES_VALUE,
   setGenerateBricksBusy,
   showGenerateBricksResult,
   showGenerateBricksError,
@@ -33,11 +35,16 @@ const PAGE_SIZE = 50;
 //: gained a `domain` parameter and never backfilled by a "Nanobar refresh".
 const UNMAPPED_DOMAIN = "(unmapped)";
 
+//: `UNMAPPED_DOMAIN`'s exact counterpart for `app_box` -- matches
+//: `nanobar_api.nanobar.repository.UNMAPPED_APP_BOX`.
+const UNMAPPED_APP_BOX = "(unmapped)";
+
 // Current filter/pagination state -- every change re-fetches from the server rather than
 // filtering client-side, since only the current page's items are ever in memory once real
 // pagination is in play.
 let currentNanobarType = "";
 let currentDomain; // undefined = no filter ("All domains"); "" is itself a real domain value
+let currentAppBox; // undefined = no filter ("All AppBoxes")
 let currentQuery = "";
 let currentPage = 1;
 let lastPageInfo = { page: 1, pageSize: PAGE_SIZE, total: 0 };
@@ -64,6 +71,17 @@ function distinctDomains(nanobars) {
 }
 
 /**
+ * Distinct `app_box` values present in the data, sorted -- same `null`/`undefined` ->
+ * `UNMAPPED_APP_BOX` handling as `distinctDomains()`, `app_box`'s own additive sibling field.
+ * @param {Array<{app_box: string | null}>} nanobars
+ * @returns {string[]}
+ */
+function distinctAppBoxes(nanobars) {
+  const appBoxes = nanobars.map((n) => (n.app_box === null || n.app_box === undefined ? UNMAPPED_APP_BOX : n.app_box));
+  return [...new Set(appBoxes)].sort();
+}
+
+/**
  * Groups the given (already server-filtered/paginated) nanobars by their `nanobar_type` --
  * a single required field, so (unlike the old target_type refs list) each nanobar lands in
  * exactly one group.
@@ -86,16 +104,17 @@ function groupByNanobarType(nanobars) {
     .map(([nanobarType, groupNanobars]) => ({ nanobarType, nanobars: groupNanobars }));
 }
 
-/** Loads the nanobar-type and domain filters' option lists from one unfiltered, large-page-
- * size probe fetch -- independent of the main paginated load, so both dropdowns always
- * reflect every value that exists, not just whatever happens to be on the current
- * filtered/paginated page. */
+/** Loads the nanobar-type, domain, and AppBox filters' option lists from one unfiltered,
+ * large-page-size probe fetch -- independent of the main paginated load, so all three
+ * dropdowns always reflect every value that exists, not just whatever happens to be on the
+ * current filtered/paginated page. */
 async function loadFilterOptions() {
   try {
     const envelope = await fetchNanobars({ page: 1, pageSize: 1000 });
     if (envelope.status === "success") {
       populateNanobarTypeFilter(distinctNanobarTypes(envelope.result.data.items));
       populateDomainFilter(distinctDomains(envelope.result.data.items));
+      populateAppBoxFilter(distinctAppBoxes(envelope.result.data.items));
     }
   } catch (err) {
     // Best-effort: the dropdowns just stay at their "All ..." defaults if this fails.
@@ -109,6 +128,7 @@ async function loadNanobars() {
     const envelope = await fetchNanobars({
       nanobarType: currentNanobarType,
       domain: currentDomain,
+      appBox: currentAppBox,
       q: currentQuery,
       page: currentPage,
       pageSize: PAGE_SIZE,
@@ -131,6 +151,8 @@ function handleFilterChange() {
   currentNanobarType = elements.nanobarTypeFilter.value;
   const domainValue = elements.domainFilter.value;
   currentDomain = domainValue === ALL_DOMAINS_VALUE ? undefined : domainValue;
+  const appBoxValue = elements.appBoxFilter.value;
+  currentAppBox = appBoxValue === ALL_APP_BOXES_VALUE ? undefined : appBoxValue;
   currentPage = 1;
   loadNanobars();
 }
@@ -184,6 +206,7 @@ function handleNextPage() {
 function init() {
   elements.nanobarTypeFilter.addEventListener("change", handleFilterChange);
   elements.domainFilter.addEventListener("change", handleFilterChange);
+  elements.appBoxFilter.addEventListener("change", handleFilterChange);
   elements.search.addEventListener("input", handleSearchInput);
   elements.generateBricksBtn.addEventListener("click", handleGenerateBricksClick);
   elements.paginationPrevBtn.addEventListener("click", handlePrevPage);

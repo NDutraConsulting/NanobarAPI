@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
@@ -7,10 +8,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nanobar_api.capture.layer_capture import capture_layer, to_payload_dict
-from nanobar_api.controllers import NanobarController
 from nanobar_api.envelope import error
+from nanobar_api.framework.nanobar_api_controller import NanobarAPIController, NanobarAPIError
 from nanobar_api.telemetry import NanobarProps
 from nanobar_api.validation import ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 async def _request_payload_snapshot(request: Request) -> dict[str, Any]:
@@ -40,13 +43,13 @@ async def _request_payload_snapshot(request: Request) -> dict[str, Any]:
     return payload
 
 
-class NanobarValidatorGate(ABC):
+class NanobarAPIValidatorGate(ABC):
     """Request-validation layer between routing and the controller — the first of the three
     layers a nanobar route call passes through (`nanobar_routes` -> `nanobar_validator_gate` ->
     `nanobar_controller`), producing the `validator-request-response` brick.
     """
 
-    controller_cls: ClassVar[type[NanobarController]]
+    controller_cls: ClassVar[type[NanobarAPIController]]
 
     @abstractmethod
     def validate(self, request: Request) -> Any:
@@ -69,8 +72,16 @@ class NanobarValidatorGate(ABC):
            own convention that `error` means an unhandled exception, not any non-2xx outcome —
            a `ValidationError` is handled, not a system fault (`_classify_scenario_type`'s own
            4xx/5xx distinction draws the same line).
-        4. on success: construct `self.controller_cls(request, request_type)` and return
-           `await controller.handle(validated)`.
+        4. on success: construct `self.controller_cls(request, request_type)` and call
+           `controller.handle(validated)`. A `NanobarAPIError` it raises (or lets propagate from
+           a service/repository underneath) becomes a `nanobar_api.envelope.error()` response
+           carrying that exception's own `status_code`; any *other* exception becomes the same
+           shape at 500 (logged server-side first, so an unexpected bug is never silently
+           swallowed, just never left to reach the router layer as a raw exception either). This
+           is the whole point of the split described in `NanobarAPIController.handle()`'s own
+           docstring: that method still lets a controller-level failure propagate uncaught out of
+           itself, on purpose -- this is where it's actually turned into a real `Response`, so
+           every route this framework's pipeline serves always gets one back, never an exception.
         """
         telemetry = request.app.state.telemetry
         request_payload = await _request_payload_snapshot(request)
@@ -99,4 +110,10 @@ class NanobarValidatorGate(ABC):
             )
 
         controller = self.controller_cls(request, request_type)
-        return await controller.handle(validated)
+        try:
+            return await controller.handle(validated)
+        except NanobarAPIError as exc:
+            return JSONResponse(error(str(exc)), status_code=exc.status_code)
+        except Exception as exc:
+            logger.exception("unhandled controller-level exception for %s", request_type)
+            return JSONResponse(error(str(exc)), status_code=500)

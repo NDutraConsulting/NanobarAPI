@@ -1,6 +1,6 @@
 """Integration tests for the blog/booking demo domain (Tier 3 Phase 3) -- real app, real
-SQLAlchemy ORM, real `NanobarEventBus`, real `NanobarValidatorGate`/`NanobarController`/
-`NanobarService` pipeline. `demo/` isn't part of `scripts/coverage`'s 100%-branch gate (see
+SQLAlchemy ORM, real `NanobarEventBus`, real `NanobarAPIValidatorGate`/`NanobarAPIController`/
+`NanobarAPIService` pipeline. `demo/` isn't part of `scripts/coverage`'s 100%-branch gate (see
 `pyproject.toml`'s `[tool.coverage.run]` `source_pkgs`), but this project's established practice
 (`test_demo_dashboard.py`) is to test demo code substantively regardless -- this file follows
 that same bar for the new blog domain.

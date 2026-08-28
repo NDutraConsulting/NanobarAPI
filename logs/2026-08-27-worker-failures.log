@@ -1,0 +1,3 @@
+{"worker_id": "itw-1", "event_id": "trigger-1", "error": "unhandled errors in a TaskGroup (1 sub-exception)", "logged_at": "2026-08-27 22:40:55"}
+{"worker_id": "itw-1", "event_id": "trigger-1", "error": "unhandled errors in a TaskGroup (1 sub-exception)", "logged_at": "2026-08-27 22:40:55"}
+{"worker_id": "itw-1", "event_id": "trigger-1", "error": "unhandled errors in a TaskGroup (1 sub-exception)", "logged_at": "2026-08-27 22:41:17"}

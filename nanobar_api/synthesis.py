@@ -12,7 +12,7 @@ flagged gap, not an oversight:
   even look like for an unknown type. **Naming note, found via live verification, not assumed:**
   the vendored taxonomy (`nanobar.types.lock`) lists `invalid_input` (400) and `validation_error`
   (422) as *separate* scenario types (`bricks/generate.py`'s `_classify_scenario_type` maps them
-  to those exact status codes) — but `NanobarValidatorGate.__call__`'s own `ValidationError`
+  to those exact status codes) — but `NanobarAPIValidatorGate.__call__`'s own `ValidationError`
   handling always returns 400, never 422. Against an app built on *this* framework's own
   validator gate, this strategy's fired request lands as `invalid_input`, not `validation_error`
   in that stricter sense; `is_expected_outcome()` below accepts either status code so the

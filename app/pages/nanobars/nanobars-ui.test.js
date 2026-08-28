@@ -59,13 +59,18 @@ test("renderGroups groups by nanobar_type, one row per nanobar, no per-item type
     {
       nanobarType: "validator-request-response",
       nanobars: [
-        { nanobar_id: "nb-1", system_name: "checkout", label: "Checkout validator" },
-        { nanobar_id: "nb-2", system_name: "checkout", label: null },
+        {
+          nanobar_id: "nb-1",
+          system_name: "checkout",
+          label: "Checkout validator",
+          monitor_target_refs: [{ target_type: "route", stable_name: "POST /checkout" }],
+        },
+        { nanobar_id: "nb-2", system_name: "checkout", label: null, monitor_target_refs: [] },
       ],
     },
     {
       nanobarType: "orm-request-response",
-      nanobars: [{ nanobar_id: "nb-3", system_name: "checkout", label: null }],
+      nanobars: [{ nanobar_id: "nb-3", system_name: "checkout", label: null, monitor_target_refs: [] }],
     },
   ]);
 
@@ -82,11 +87,24 @@ test("renderGroups groups by nanobar_type, one row per nanobar, no per-item type
   const items = sections[0].querySelectorAll(".nanobar-item");
   assert.equal(items.length, 2);
   assert.equal(items[0].querySelector(".nanobar-id").textContent, "nb-1");
+  assert.equal(items[0].querySelector(".nanobar-endpoint").textContent, "POST /checkout");
   assert.equal(items[0].querySelector(".nanobar-label").textContent, "Checkout validator");
+  // No route-shaped monitor_target_refs entry -> the endpoint element is removed entirely, not
+  // left blank (same pattern .nanobar-label already uses for a missing label).
+  assert.equal(items[1].querySelector(".nanobar-endpoint"), null);
   // No label -> the element is removed entirely, not left blank.
   assert.equal(items[1].querySelector(".nanobar-label"), null);
   // The per-item type chip is gone -- the group heading already carries that information.
   assert.equal(items[0].querySelector(".nanobar-track-type"), null);
+});
+
+test("renderGroups removes the endpoint element when monitor_target_refs is missing entirely", () => {
+  ui.renderGroups([
+    { nanobarType: "worker", nanobars: [{ nanobar_id: "nb-4", system_name: "kahnban", label: null }] },
+  ]);
+
+  const item = byId("nanobars-groups").querySelector(".nanobar-item");
+  assert.equal(item.querySelector(".nanobar-endpoint"), null);
 });
 
 test("renderGroups shows the empty state for zero groups", () => {
@@ -141,6 +159,35 @@ test("populateDomainFilter preserves the current selection when still valid, inc
   ui.populateDomainFilter(["", "admin/app", "admin/nanobar"]);
 
   assert.equal(byId("domain-filter").value, "");
+});
+
+test("populateAppBoxFilter fills the select with an 'All AppBoxes' option plus one per app_box", () => {
+  ui.populateAppBoxFilter(["admin/app", "admin/nanobar", "api", "workers"]);
+
+  const select = byId("app-box-filter");
+  const optionValues = [...select.options].map((o) => o.value);
+  const optionLabels = [...select.options].map((o) => o.textContent);
+  assert.deepEqual(optionValues, [ui.ALL_APP_BOXES_VALUE, "admin/app", "admin/nanobar", "api", "workers"]);
+  assert.deepEqual(optionLabels, ["All AppBoxes", "admin/app", "admin/nanobar", "api", "workers"]);
+});
+
+test("populateAppBoxFilter renders the (unmapped) sentinel value as-is, not specially", () => {
+  ui.populateAppBoxFilter(["(unmapped)", "api"]);
+
+  const select = byId("app-box-filter");
+  assert.deepEqual(
+    [...select.options].map((o) => o.textContent),
+    ["All AppBoxes", "(unmapped)", "api"]
+  );
+});
+
+test("populateAppBoxFilter preserves the current selection when still valid", () => {
+  ui.populateAppBoxFilter(["api", "workers"]);
+  byId("app-box-filter").value = "workers";
+
+  ui.populateAppBoxFilter(["admin/app", "api", "workers"]);
+
+  assert.equal(byId("app-box-filter").value, "workers");
 });
 
 test("showGenerateBricksResult and showGenerateBricksError set the status text and error class", () => {

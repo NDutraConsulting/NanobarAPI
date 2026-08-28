@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from nanobar_api.models import NanobarModel
+from nanobar_api.framework.nanobar_api_model import NanobarAPIModel
 from nanobar_api.state_machine import InvalidTransition
 
 
-class _Order(NanobarModel):
+class _Order(NanobarAPIModel):
     monitored_state_fields = {"status": ("pending", "shipped", "delivered")}
     idempotent_fields = ("order_id", "sku")
 
 
-class _NoDeclarationsModel(NanobarModel):
+class _NoDeclarationsModel(NanobarAPIModel):
     pass
 
 

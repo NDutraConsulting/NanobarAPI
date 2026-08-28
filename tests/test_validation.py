@@ -26,6 +26,7 @@ class Person:
     scores: list[int] = field(default_factory=list)
     note: str = "n/a"
     payload: Any = None
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 # --- parse: happy paths ---
@@ -207,6 +208,57 @@ def test_parse_list_item_errors_accumulate() -> None:
     assert "tags[2]" in exc_info.value.errors[1]
 
 
+def test_parse_dict_field_round_trips() -> None:
+    person = parse(
+        Person,
+        {
+            "name": "Ada",
+            "age": 30,
+            "height": 1.7,
+            "active": True,
+            "tags": [],
+            "address": {"city": "L"},
+            "metadata": {"role": "engineer"},
+        },
+    )
+    assert person.metadata == {"role": "engineer"}
+
+
+def test_parse_dict_field_wrong_type() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        parse(
+            Person,
+            {
+                "name": "Ada",
+                "age": 30,
+                "height": 1.7,
+                "active": True,
+                "tags": [],
+                "address": {"city": "L"},
+                "metadata": "not a dict",
+            },
+        )
+    assert "expected an object" in exc_info.value.errors[0]
+
+
+def test_parse_dict_field_item_errors_accumulate() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        parse(
+            Person,
+            {
+                "name": "Ada",
+                "age": 30,
+                "height": 1.7,
+                "active": True,
+                "tags": [],
+                "address": {"city": "L"},
+                "metadata": {"a": "ok", "b": 2},
+            },
+        )
+    assert len(exc_info.value.errors) == 1
+    assert "metadata.b" in exc_info.value.errors[0]
+
+
 def test_parse_nested_dataclass_wrong_type() -> None:
     with pytest.raises(ValidationError) as exc_info:
         parse(
@@ -248,10 +300,10 @@ def test_coerce_union_all_args_fail() -> None:
 def test_coerce_unsupported_type_raises() -> None:
     @dataclass
     class Unsupported:
-        value: dict[str, str]
+        value: set[str]
 
     with pytest.raises(TypeError):
-        parse(Unsupported, {"value": {}})
+        parse(Unsupported, {"value": set()})
 
 
 # --- to_json_schema ---
@@ -284,6 +336,7 @@ def test_to_json_schema_full_shape() -> None:
     assert schema["properties"]["address"]["type"] == "object"
     assert schema["properties"]["nickname"] == {"type": "string", "nullable": True}
     assert schema["properties"]["payload"] == {}
+    assert schema["properties"]["metadata"] == {"type": "object", "additionalProperties": {"type": "string"}}
     assert set(schema["required"]) == {"name", "age", "height", "active", "tags", "address"}
 
 

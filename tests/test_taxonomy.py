@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobar_api.bricks.schema import Nanobar, RegressionBrick
+from nanobar_api.nanobar.model import Nanobar
+from nanobar_api.regression_brick.model import RegressionBrick
 from nanobar_api.taxonomy import (
     VENDORED_TAXONOMY_PATH,
     ExpectedScenario,

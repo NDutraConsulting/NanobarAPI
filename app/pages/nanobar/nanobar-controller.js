@@ -180,6 +180,7 @@ function wireTagRemoveDelegation() {
 async function handleRunClick() {
   if (!selectedBrickId) return;
   ui.setRunBusy(true);
+  ui.setRunProgressVisible(true);
   ui.showRunStatus("Running…");
   try {
     const envelope = await api.replayBrick(selectedBrickId);
@@ -194,22 +195,60 @@ async function handleRunClick() {
     ui.showRunError("Network error while running this brick. Please try again.");
   } finally {
     ui.setRunBusy(false);
+    ui.setRunProgressVisible(false);
   }
+}
+
+// A replay's own spans reach the telemetry db via the background TelemetryDrainWorker, which
+// batches on a timer (nanobar_api/telemetry/telemetry_drain_worker.py, up to ~batch_window_s)
+// rather than synchronously with the replay POST that produced them -- GET .../traces/{trace_id}
+// /spans can 404 for up to that long right after a run, even though the replay itself already
+// succeeded. Same class of race the backend's own event-to-subscriber replay dispatch already
+// handles with a bounded poll loop (regression_brick_analysis_service.py's
+// _REPLAY_SPAN_POLL_ATTEMPTS/_REPLAY_SPAN_POLL_INTERVAL_S) -- mirrored here with the same total
+// ~3s budget, since this is the same underlying drain delay, just observed from the client side
+// instead of from another server-side call.
+const SPAN_POLL_ATTEMPTS = 10;
+const SPAN_POLL_INTERVAL_MS = 300;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function handleRefreshClick() {
   if (!lastReplayTraceId) return;
+  const traceId = lastReplayTraceId;
   ui.setRefreshBusy(true);
+  ui.setRunProgressVisible(true);
   try {
-    const envelope = await api.fetchTraceSpans(lastReplayTraceId);
-    if (envelope.status === "success") {
-      ui.renderRunSpans(envelope.result.data);
+    for (let attempt = 0; attempt < SPAN_POLL_ATTEMPTS; attempt++) {
+      // The user may have selected a different brick (changing lastReplayTraceId) or started a
+      // fresh run while this loop was waiting -- stop rather than clobber newer state with a
+      // stale trace's spans.
+      if (lastReplayTraceId !== traceId) return;
+
+      let envelope;
+      try {
+        envelope = await api.fetchTraceSpans(traceId);
+      } catch (err) {
+        // Best-effort: the verdict already rendered is the primary result; a failed span
+        // refresh just leaves the span list as it was.
+        return;
+      }
+      if (envelope.status === "success") {
+        ui.renderRunSpans(envelope.result.data);
+        return;
+      }
+      if (attempt === 0) {
+        ui.showRunStatus("Waiting for spans…");
+      }
+      await sleep(SPAN_POLL_INTERVAL_MS);
     }
-  } catch (err) {
-    // Best-effort: the verdict already rendered is the primary result; a failed span refresh
-    // just leaves the span list as it was.
+    // Never resolved within budget -- leave the span list as it was rather than showing a
+    // misleading "not found" for what's most likely still-draining data, not a real error.
   } finally {
     ui.setRefreshBusy(false);
+    ui.setRunProgressVisible(false);
   }
 }
 

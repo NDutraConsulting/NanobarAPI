@@ -33,9 +33,9 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from nanobar_api.applications import NanobarAPI
-from nanobar_api.controllers import NanobarController
+from nanobar_api.framework.nanobar_api_controller import NanobarAPIController
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.routing import NanobarRouteRule, NanobarRouteSet, RestRouteAdapter
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 #: Vendored landing-page static assets -- same "pure static file serving" shape as the
 #: swagger-ui/design-system mounts, and (per the review pass that found the design-system
@@ -50,7 +50,7 @@ DEFAULT_README_CONTENT = (
 )
 
 
-class ApiReadmeController(NanobarController):
+class ApiReadmeController(NanobarAPIController):
     def load_required_services(self) -> None:
         pass  # nothing to load -- the content is static app state, no per-request I/O
 
@@ -65,7 +65,7 @@ class ApiReadmeController(NanobarController):
         return {"content": result}
 
 
-class ApiReadmeGate(NanobarValidatorGate):
+class ApiReadmeGate(NanobarAPIValidatorGate):
     controller_cls = ApiReadmeController
 
     def validate(self, request: Request) -> None:

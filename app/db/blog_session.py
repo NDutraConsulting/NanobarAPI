@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +17,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models.blog_model import Base
 from nanobar_api.eventbus.queue_repository import EventQueueRepository
 from nanobar_api.orm import NanobarORMWrapper, build_engine_url
+from nanobar_api.shadow import is_shadow_mode
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 #: Default location: alongside this module itself (`app/db/blog.db`), not a shared data
 #: directory -- gitignored.
@@ -49,3 +54,21 @@ def build_session_factory(db_path: str, *, repository: EventQueueRepository) -> 
     NanobarORMWrapper.install(engine, repository)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
+
+
+def resolve_session_factory(request: Request) -> sessionmaker[Session]:
+    """Picks `request.app.state.blog_session_factory` or `.blog_shadow_session_factory` based on
+    `nanobar_api.shadow.is_shadow_mode()` -- the "simple header flag" mechanism regression-brick
+    replay (`app/admin/nanobar/api.py`'s `replay_brick_action`) uses so a replayed request's
+    writes land in a disposable shadow replica, not live blog data, without needing a second
+    process/app instance the way the old `shadow_server.py` did. Every blog route handler reads
+    its session through this instead of `app.state.blog_session_factory` directly, so the same
+    route code serves both live and shadow traffic depending only on which request it's handling.
+
+    Both factories are built once, at app-build time (`app/main.py`'s `build_app()`), against two
+    separate SQLite files/engines -- this only *selects* between the two already-built factories
+    per request, it doesn't build either one itself.
+    """
+    if is_shadow_mode():
+        return request.app.state.blog_shadow_session_factory  # type: ignore[no-any-return]
+    return request.app.state.blog_session_factory  # type: ignore[no-any-return]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -16,13 +16,17 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from nanobar_api.bricks.generate import _classify_capture_layer_scenario, generate_bricks
-from nanobar_api.bricks.store import connect as connect_bricks
 from nanobar_api.capture.layer_capture import capture_layer
 from nanobar_api.eventbus.events import Event
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
-from nanobar_api.eventbus.store import connect as connect_events, get_unprocessed, insert_events
 from nanobar_api.middleware.snapshot import SnapshotMiddleware
 from nanobar_api.middleware.trace import EventBusTraceMiddleware
+from nanobar_api.persistence import build_session_factory
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
+from nanobar_api.telemetry.model import Span
+from nanobar_api.telemetry.persistence import build_session_factory as build_telemetry_session_factory
+from nanobar_api.telemetry.span_repository import SpanRepository
+from nanobar_api.telemetry.trace_repository import TraceRepository
 
 # A real SDK TracerProvider so EventBusTraceMiddleware produces real (non-NoOp) trace/span
 # ids, which SnapshotMiddleware's emitted event then carries. The OTel API only allows the
@@ -72,10 +76,45 @@ def _capture_one_snapshot_event(
     return event
 
 
-def _dbs(tmp_path: Path) -> tuple[sqlite3.Connection, sqlite3.Connection]:
-    events_conn = connect_events(str(tmp_path / "events.db"))
-    bricks_conn = connect_bricks(str(tmp_path / "regression_bricks.db"))
-    return events_conn, bricks_conn
+def _dbs(tmp_path: Path) -> tuple[TraceRepository, SpanRepository, RegressionBrickRepository]:
+    telemetry_session = build_telemetry_session_factory(str(tmp_path / "telemetry.db"))()
+    bricks_session = build_session_factory(
+        str(tmp_path / "regression_bricks.db"), repository=EventQueueRepository([ChannelConfig(name="snapshot")])
+    )()
+    return (
+        TraceRepository(telemetry_session),
+        SpanRepository(telemetry_session),
+        RegressionBrickRepository(bricks_session),
+    )
+
+
+def _ingest_events(events: Sequence[Event], trace_repository: TraceRepository, span_repository: SpanRepository) -> None:
+    """Test-only stand-in for what `TelemetryDrainWorker` does for real in production -- writes
+    each `Event` straight into `Trace`/`Span` rows. Synthesizes a `trace_id`/`span_id` from
+    `event_id` for an event that doesn't already carry one (a hand-built payload-shape test
+    fixture, or a `capture_layer()` call made outside any active trace context) -- these tests
+    exercise `generate_bricks()`'s own payload-handling logic, not trace-context realism, and
+    `Span.trace_id`/`.span_id` are non-nullable regardless.
+    """
+    for event in events:
+        trace_id = event.trace_id or f"synthetic-trace-{event.event_id}"
+        span_id = event.span_id or f"synthetic-span-{event.event_id}"
+        trace_repository.get_or_create(trace_id, entry_point=event.payload.get("name") or event.channel)
+        span_repository.create(
+            Span(
+                event_id=event.event_id,
+                span_id=span_id,
+                trace_id=trace_id,
+                channel=event.channel,
+                recorded_at_ns=event.recorded_at_ns,
+                monotonic_ns=event.monotonic_ns,
+                payload_json=event.payload,
+            )
+        )
+
+
+def _unprocessed_span_count(span_repository: SpanRepository, channel: str) -> int:
+    return span_repository.session.query(Span).filter(Span.channel == channel, Span.processed_at.is_(None)).count()
 
 
 def test_generate_bricks_builds_brick_from_real_snapshot_event(tmp_path: Path) -> None:
@@ -83,34 +122,31 @@ def test_generate_bricks_builds_brick_from_real_snapshot_event(tmp_path: Path) -
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert len(bricks) == 1
-        brick = bricks[0]
-        assert brick.regression_brick_id.startswith("rbrick-")
-        assert brick.schema_version == "1.0"
-        assert brick.brick_version == 1
-        assert brick.created_by == "nanobarapi"
-        assert brick.capture_policy_id == "default-v1"
-        assert brick.content_hash == f"sha256:{event.payload['content_hash']}"
+    assert len(bricks) == 1
+    brick = bricks[0]
+    assert brick.regression_brick_id.startswith("rbrick-")
+    assert brick.schema_version == "1.0"
+    assert brick.brick_version == 1
+    assert brick.created_by == "nanobarapi"
+    assert brick.capture_policy_id == "default-v1"
+    assert brick.content_hash == f"sha256:{event.payload['content_hash']}"
+    assert brick.span_id == event.span_id
 
-        assert brick.request["method"] == "GET"
-        assert brick.request["path"] == "/items"
-        assert brick.request["payload"] == {}
+    assert brick.request["method"] == "GET"
+    assert brick.request["path"] == "/items"
+    assert brick.request["payload"] == {}
 
-        assert brick.response["status_code"] == 200
-        assert brick.response["payload"] == {
-            "status": "success",
-            "msg": "",
-            "result": {"type": "array", "data": [{"id": 1, "name": "widget"}]},
-        }
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert brick.response["status_code"] == 200
+    assert brick.response["payload"] == {
+        "status": "success",
+        "msg": "",
+        "result": {"type": "array", "data": [{"id": 1, "name": "widget"}]},
+    }
 
 
 def test_source_is_honest_and_minimal_not_fabricated(tmp_path: Path) -> None:
@@ -118,67 +154,99 @@ def test_source_is_honest_and_minimal_not_fabricated(tmp_path: Path) -> None:
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        brick = bricks[0]
-        # Only real, known-at-this-stage fields — no fabricated host/project/file/class/
-        # function fields the codebase doesn't actually know at this stage.
-        assert set(brick.source.keys()) == {"trace_id", "span_id", "channel"}
-        assert brick.source["channel"] == "snapshot"
-        # A real SDK TracerProvider is configured above, so EventBusTraceMiddleware
-        # actually produced a real trace/span id for this request.
-        assert brick.source["trace_id"] == event.trace_id
-        assert brick.source["span_id"] == event.span_id
-        assert brick.source["trace_id"] is not None
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    brick = bricks[0]
+    # Only real, known-at-this-stage fields — no fabricated host/project/file/class/
+    # function fields the codebase doesn't actually know at this stage.
+    assert set(brick.source.keys()) == {"trace_id", "span_id", "channel"}
+    assert brick.source["channel"] == "snapshot"
+    # A real SDK TracerProvider is configured above, so EventBusTraceMiddleware
+    # actually produced a real trace/span id for this request.
+    assert brick.source["trace_id"] == event.trace_id
+    assert brick.source["span_id"] == event.span_id
+    assert brick.source["trace_id"] is not None
 
 
-def test_trace_refs_populated_when_trace_id_present(tmp_path: Path) -> None:
+def test_brick_is_self_contained_with_entry_point_and_app_box_from_its_trace(tmp_path: Path) -> None:
+    """`entry_point`/`app_box` come straight off the owning `Trace` row this loop already holds
+    in scope -- no query against the telemetry db is needed at replay time. See
+    `.focusari/2026-08-27-regression-brick-clarification.md` Part 2."""
+    repository = _repository("snapshot", "trace")
+    client = TestClient(_build_app(repository))
+    event = _capture_one_snapshot_event(client, repository, path="/items")
+
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    trace_id = event.trace_id or f"synthetic-trace-{event.event_id}"
+    trace_repository.get_or_create(trace_id, entry_point="GET /items", app_box="api")
+    span_repository.create(
+        Span(
+            event_id=event.event_id,
+            span_id=event.span_id or f"synthetic-span-{event.event_id}",
+            trace_id=trace_id,
+            channel=event.channel,
+            recorded_at_ns=event.recorded_at_ns,
+            monotonic_ns=event.monotonic_ns,
+            payload_json=event.payload,
+        )
+    )
+
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
+
+    brick = bricks[0]
+    assert brick.entry_point == "GET /items"
+    assert brick.app_box == "api"
+    assert brick.source_info == {"trace_id": event.trace_id, "span_id": event.span_id, "channel": "snapshot"}
+
+
+def test_capture_layer_produced_brick_gets_nanobar_type_promoted_to_a_column(tmp_path: Path) -> None:
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    trace_repository.get_or_create("tr-1", entry_point="POST /items")
+    span_repository.create(
+        Span(
+            event_id="ev-1",
+            span_id="sp-1",
+            trace_id="tr-1",
+            channel="snapshot",
+            recorded_at_ns=1,
+            monotonic_ns=1,
+            payload_json={
+                "request": {"name": "gizmo"},
+                "response": {"id": 1, "name": "gizmo"},
+                "content_hash": "abc",
+                "nanobar_type": "controller-request-response",
+            },
+        )
+    )
+
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
+
+    brick = bricks[0]
+    assert brick.nanobar_type == "controller-request-response"
+    assert brick.source.get("nanobar_type") == "controller-request-response"  # source_json untouched
+
+
+def test_trace_refs_always_populated(tmp_path: Path) -> None:
+    """Unlike the old raw-`Event` shape (where `trace_id`/`span_id` were nullable, and
+    `trace_refs` conditional on them), `Span.trace_id`/`.span_id` are non-nullable columns --
+    `TelemetryDrainWorker` never ingests an event missing either (see
+    `telemetry_drain_worker.py`'s `skipped_no_trace_context`), so every brick `generate_bricks()`
+    produces now unconditionally carries a `trace_refs` entry."""
     repository = _repository("snapshot", "trace")
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
     assert event.trace_id is not None  # sanity: the real tracer produced one
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        brick = bricks[0]
-        assert brick.trace_refs == [{"trace_id": event.trace_id, "span_ids": [event.span_id]}]
-    finally:
-        events_conn.close()
-        bricks_conn.close()
-
-
-def test_trace_refs_empty_when_trace_id_absent(tmp_path: Path) -> None:
-    # No trace middleware in this app, so current_trace_id is never set.
-    repository = _repository("snapshot")
-    app = Starlette(
-        routes=[Route("/items", _get_items)],
-        middleware=[Middleware(SnapshotMiddleware, repository=repository, channel="snapshot")],
-    )
-    client = TestClient(app)
-    event = _capture_one_snapshot_event(client, repository, path="/items")
-    assert event.trace_id is None
-
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
-
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
-
-        assert bricks[0].trace_refs == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    brick = bricks[0]
+    assert brick.trace_refs == [{"trace_id": event.trace_id, "span_ids": [event.span_id]}]
 
 
 def test_request_body_decoded_as_json(tmp_path: Path) -> None:
@@ -188,16 +256,12 @@ def test_request_body_decoded_as_json(tmp_path: Path) -> None:
         client, repository, method="POST", path="/echo", content=json.dumps({"a": 1, "b": [1, 2]})
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks[0].request["payload"] == {"a": 1, "b": [1, 2]}
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].request["payload"] == {"a": 1, "b": [1, 2]}
 
 
 def test_non_json_request_body_falls_back_to_empty_dict(tmp_path: Path) -> None:
@@ -207,16 +271,12 @@ def test_non_json_request_body_falls_back_to_empty_dict(tmp_path: Path) -> None:
         client, repository, method="POST", path="/echo", content=b"\xff\xfe not json at all"
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks[0].request["payload"] == {}
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].request["payload"] == {}
 
 
 def test_dedup_repeated_content_hash_does_not_insert_second_brick_row(tmp_path: Path) -> None:
@@ -230,20 +290,16 @@ def test_dedup_repeated_content_hash_does_not_insert_second_brick_row(tmp_path: 
     assert event_1.payload["content_hash"] == event_2.payload["content_hash"]
     assert event_1.event_id != event_2.event_id
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event_1])
-        first_batch = generate_bricks(events_conn, bricks_conn, channel="snapshot")
-        assert len(first_batch) == 1
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event_1], trace_repository, span_repository)
+    first_batch = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
+    assert len(first_batch) == 1
 
-        insert_events(events_conn, [event_2])
-        second_batch = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    _ingest_events([event_2], trace_repository, span_repository)
+    second_batch = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        # No newly-inserted brick for the duplicate content_hash.
-        assert second_batch == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    # No newly-inserted brick for the duplicate content_hash.
+    assert second_batch == []
 
 
 def test_dedup_still_marks_the_duplicate_event_processed(tmp_path: Path) -> None:
@@ -253,17 +309,13 @@ def test_dedup_still_marks_the_duplicate_event_processed(tmp_path: Path) -> None
     event_1 = _capture_one_snapshot_event(client, repository, path="/items")
     event_2 = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event_1, event_2])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event_1, event_2], trace_repository, span_repository)
 
-        generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        # Both events consumed in one call; nothing left unprocessed for a second call.
-        assert get_unprocessed(events_conn, "snapshot") == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    # Both events consumed in one call; nothing left unprocessed for a second call.
+    assert _unprocessed_span_count(span_repository, "snapshot") == 0
 
 
 def test_second_call_does_not_reprocess_already_marked_events(tmp_path: Path) -> None:
@@ -271,18 +323,14 @@ def test_second_call_does_not_reprocess_already_marked_events(tmp_path: Path) ->
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        first_call = generate_bricks(events_conn, bricks_conn, channel="snapshot")
-        second_call = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    first_call = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
+    second_call = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert len(first_call) == 1
-        assert second_call == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert len(first_call) == 1
+    assert second_call == []
 
 
 def test_malformed_payload_is_marked_processed_and_skipped_not_crashed(tmp_path: Path) -> None:
@@ -294,18 +342,14 @@ def test_malformed_payload_is_marked_processed_and_skipped_not_crashed(tmp_path:
         payload={"unexpected": "shape"},  # missing request/response/content_hash entirely
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [malformed_event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([malformed_event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks == []
-        # Marked processed despite being unusable -- no retry loop at this stage.
-        assert get_unprocessed(events_conn, "snapshot") == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks == []
+    # Marked processed despite being unusable -- no retry loop at this stage.
+    assert _unprocessed_span_count(span_repository, "snapshot") == 0
 
 
 def test_non_dict_request_payload_is_marked_processed_and_skipped_not_crashed(tmp_path: Path) -> None:
@@ -319,17 +363,13 @@ def test_non_dict_request_payload_is_marked_processed_and_skipped_not_crashed(tm
         payload={"request": "not-an-object", "response": {}, "content_hash": "abc"},
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [malformed_event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([malformed_event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks == []
-        assert get_unprocessed(events_conn, "snapshot") == []
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks == []
+    assert _unprocessed_span_count(span_repository, "snapshot") == 0
 
 
 def test_limit_is_respected(tmp_path: Path) -> None:
@@ -337,19 +377,16 @@ def test_limit_is_respected(tmp_path: Path) -> None:
     client = TestClient(_build_app(repository))
     events = [_capture_one_snapshot_event(client, repository, path="/items") for _ in range(3)]
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, events)
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events(events, trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot", limit=1)
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot", limit=1)
 
-        # Only one event claimed this call; the identical-content duplicates would dedup
-        # anyway, so assert on the unprocessed count directly instead.
-        assert len(get_unprocessed(events_conn, "snapshot")) == 2
-        assert len(bricks) <= 1
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    # Only one trace claimed this call (each capture is its own trace here); the
+    # identical-content duplicates would dedup anyway, so assert on the unprocessed count
+    # directly instead.
+    assert _unprocessed_span_count(span_repository, "snapshot") == 2
+    assert len(bricks) <= 1
 
 
 def test_created_by_and_capture_policy_id_are_passed_through(tmp_path: Path) -> None:
@@ -357,23 +394,20 @@ def test_created_by_and_capture_policy_id_are_passed_through(tmp_path: Path) -> 
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(
-            events_conn,
-            bricks_conn,
-            channel="snapshot",
-            created_by="ci-job",
-            capture_policy_id="custom-policy",
-        )
+    bricks = generate_bricks(
+        trace_repository,
+        span_repository,
+        brick_repository,
+        channel="snapshot",
+        created_by="ci-job",
+        capture_policy_id="custom-policy",
+    )
 
-        assert bricks[0].created_by == "ci-job"
-        assert bricks[0].capture_policy_id == "custom-policy"
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].created_by == "ci-job"
+    assert bricks[0].capture_policy_id == "custom-policy"
 
 
 def test_custom_channel_is_respected(tmp_path: Path) -> None:
@@ -387,18 +421,14 @@ def test_custom_channel_is_respected(tmp_path: Path) -> None:
     event = repository.get_any(["custom"], timeout=1.0)
     assert event is not None
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        # Default channel ("snapshot") sees nothing on the "custom" channel.
-        assert generate_bricks(events_conn, bricks_conn) == []
+    # Default channel ("snapshot") sees nothing on the "custom" channel.
+    assert generate_bricks(trace_repository, span_repository, brick_repository) == []
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="custom")
-        assert len(bricks) == 1
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="custom")
+    assert len(bricks) == 1
 
 
 def test_request_headers_and_query_params_carried_through(tmp_path: Path) -> None:
@@ -415,18 +445,14 @@ def test_request_headers_and_query_params_carried_through(tmp_path: Path) -> Non
         client, repository, path="/items", params={"q": "widgets"}, headers={"content-type": "application/json"}
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        brick = bricks[0]
-        assert brick.request["headers"].get("content-type") == "application/json"
-        assert brick.request["query_params"] == {"q": "widgets"}
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    brick = bricks[0]
+    assert brick.request["headers"].get("content-type") == "application/json"
+    assert brick.request["query_params"] == {"q": "widgets"}
 
 
 def _event_with_status_code(status_code: int | None, event_id: str = "evt-1") -> Event:
@@ -465,16 +491,12 @@ def _event_with_status_code(status_code: int | None, event_id: str = "evt-1") ->
 def test_regression_scenario_type_classified_from_status_code(
     tmp_path: Path, status_code: int | None, expected_scenario_type: str | None
 ) -> None:
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [_event_with_status_code(status_code)])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([_event_with_status_code(status_code)], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks[0].regression_scenario_type == expected_scenario_type
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].regression_scenario_type == expected_scenario_type
 
 
 def test_body_b64_round_trips_through_base64_correctly(tmp_path: Path) -> None:
@@ -503,20 +525,16 @@ def test_body_b64_round_trips_through_base64_correctly(tmp_path: Path) -> None:
         },
     )
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        brick = bricks[0]
-        assert brick.request["payload"] == {"x": 1}
-        assert brick.response["payload"] == {"ok": True}
-        assert brick.response["status_code"] == 201
-        assert brick.content_hash == "sha256:deadbeef"
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    brick = bricks[0]
+    assert brick.request["payload"] == {"x": 1}
+    assert brick.response["payload"] == {"ok": True}
+    assert brick.response["status_code"] == 201
+    assert brick.content_hash == "sha256:deadbeef"
 
 
 def test_capture_layer_produced_event_uses_request_response_as_is(tmp_path: Path) -> None:
@@ -531,20 +549,16 @@ def test_capture_layer_produced_event_uses_request_response_as_is(tmp_path: Path
     event = repository.get_any(["snapshot"], timeout=1.0)
     assert event is not None
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert len(bricks) == 1
-        brick = bricks[0]
-        assert brick.request == {"method": "POST", "path_params": {}, "query_params": {}, "body": {"name": "Ada"}}
-        assert brick.response == {"name": "Ada"}
-        assert brick.source["nanobar_type"] == "validator-request-response"
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert len(bricks) == 1
+    brick = bricks[0]
+    assert brick.request == {"method": "POST", "path_params": {}, "query_params": {}, "body": {"name": "Ada"}}
+    assert brick.response == {"name": "Ada"}
+    assert brick.source["nanobar_type"] == "validator-request-response"
 
 
 def test_capture_layer_produced_event_classifies_success() -> None:
@@ -571,16 +585,12 @@ def test_capture_layer_produced_event_regression_scenario_type_set_on_brick(tmp_
     event = repository.get_any(["snapshot"], timeout=1.0)
     assert event is not None
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks[0].regression_scenario_type == "invalid_input"
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].regression_scenario_type == "invalid_input"
 
 
 def test_snapshot_middleware_event_source_has_no_nanobar_type_key(tmp_path: Path) -> None:
@@ -588,16 +598,12 @@ def test_snapshot_middleware_event_source_has_no_nanobar_type_key(tmp_path: Path
     client = TestClient(_build_app(repository))
     event = _capture_one_snapshot_event(client, repository, path="/items")
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert "nanobar_type" not in bricks[0].source
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert "nanobar_type" not in bricks[0].source
 
 
 def test_classify_db_scenario_type_no_error_is_success() -> None:
@@ -632,14 +638,10 @@ def test_orm_produced_event_uses_db_scenario_classifier(tmp_path: Path) -> None:
     event = repository.get_any(["snapshot"], timeout=1.0)
     assert event is not None
 
-    events_conn, bricks_conn = _dbs(tmp_path)
-    try:
-        insert_events(events_conn, [event])
+    trace_repository, span_repository, brick_repository = _dbs(tmp_path)
+    _ingest_events([event], trace_repository, span_repository)
 
-        bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot")
+    bricks = generate_bricks(trace_repository, span_repository, brick_repository, channel="snapshot")
 
-        assert bricks[0].regression_scenario_type == "conflict"
-        assert bricks[0].source["route_key"] == "POST /orders"
-    finally:
-        events_conn.close()
-        bricks_conn.close()
+    assert bricks[0].regression_scenario_type == "conflict"
+    assert bricks[0].source["route_key"] == "POST /orders"

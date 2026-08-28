@@ -1,16 +1,30 @@
-"""Layered verdict — replaces a raw byte-diff replay comparison.
+"""Verdict — "run it, then diff it. If they match, show a pass. If they don't, show the diff.
+That is all." Per the user's own correction (2026-08-27,
+`.focusari/2026-08-27-regression-brick-clarification.md` Part 1) — the previous version of this
+module (three separately-gated layers: status/envelope-status, optional schema, then pinned-field
+diff, with a status-code mismatch skipping the other two entirely) was overcomplicated relative
+to what's actually wanted. Resolving D4 (`.focusari/2026-08-27.1800.build_and_update_plan_with_tasks.md`
+Phase 6): rewritten to match the simple model directly, not left divergent from it.
 
-Per the regression-brick system plan (`.focusari/regression-brick-system-plan.md` §7,
-"Layered Verdict"), a byte-diff verdict drowns in false positives immediately: `Date`
-headers, generated ids, timestamps, trace ids, and JSON key ordering are all legitimate
-nondeterminism that must not fail a replay. Three layers, evaluated in order, cheapest and
-highest-signal first:
+**One diff pass, not three gated layers.** `brick.response` and `replayed_response` are both
+already shaped `{"status_code": ..., "payload": ...}` (`regression_brick_analysis_service.py`'s
+`_verdict_inputs()` guarantees this even for a capture_layer()-sourced brick) — diffed as one
+structure, so a status-code mismatch is just one more diff entry, not a special gate that hides
+whatever else also differs. This is a real improvement, not just simpler: the old skip-on-
+status-failure behavior actively hid useful information (a regression that also changed the
+payload would only ever report "status mismatch," never showing *what else* broke). The old
+status layer's separate "envelope status" comparison (`nanobar_api.envelope.Envelope`'s own
+`status` field, `"success"|"error"|"timeout"`) needed no special-casing to preserve either — it's
+just `payload.status`, already covered by the same structural diff.
 
-1. Status/envelope-status match.
-2. Schema validation against the (optional) induced/committed contract.
-3. Pinned-field equality, with per-brick volatile-field masking.
+Schema validation (an optional, per-request `response_schema`) still runs, but as one more
+source of diff entries, not a gate — a schema violation is reported alongside any other
+differences, not instead of them. `_validate_against_schema`/`_schema_type_matches` are otherwise
+unchanged from the previous version of this module.
 
-`overall_passed` is True only if all three layers pass.
+`volatile_fields` masking is unchanged: `_diff_paths` masks *values* for volatile fields (default:
+timestamps, generated ids, trace ids) while still requiring matching *presence* — a masked field
+missing from one side but not the other is still a real, reported difference.
 """
 
 from __future__ import annotations
@@ -18,67 +32,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from nanobar_api.bricks.schema import RegressionBrick
+from nanobar_api.regression_brick.model import RegressionBrick
 
 DEFAULT_VOLATILE_FIELDS = frozenset({"timestamp", "created_at", "updated_at", "id", "request_id", "trace_id"})
-
-_ENVELOPE_STATUSES = frozenset({"success", "error", "timeout"})
-
-_SKIPPED_DETAIL = "skipped: status layer already failed"
-
-
-@dataclass(frozen=True)
-class LayerResult:
-    passed: bool
-    detail: str
 
 
 @dataclass(frozen=True)
 class Verdict:
     overall_passed: bool
-    status_layer: LayerResult
-    schema_layer: LayerResult
-    pinned_field_layer: LayerResult
-
-
-def _looks_like_envelope(payload: Any) -> bool:
-    return isinstance(payload, dict) and payload.get("status") in _ENVELOPE_STATUSES
-
-
-def _evaluate_status_layer(brick: RegressionBrick, replayed_response: dict[str, Any]) -> LayerResult:
-    original_status_code = brick.response.get("status_code")
-    replayed_status_code = replayed_response.get("status_code")
-
-    if original_status_code != replayed_status_code:
-        return LayerResult(
-            passed=False,
-            detail=f"status_code mismatch: brick={original_status_code!r} replayed={replayed_status_code!r}",
-        )
-
-    original_payload = brick.response.get("payload")
-    replayed_payload = replayed_response.get("payload")
-    # The design doc groups "status/envelope-status match" as one first layer, not a
-    # separate layer — only compared when both payloads actually look like this project's
-    # service envelope (nanobar_api.envelope.Envelope): a dict with a "status" key whose
-    # value is one of "success"/"error"/"timeout". A non-envelope payload (or one brick that
-    # is an envelope and one that isn't) skips this half of the check silently rather than
-    # failing on a shape this layer isn't meant to judge — that's the schema/pinned-field
-    # layers' job.
-    if _looks_like_envelope(original_payload) and _looks_like_envelope(replayed_payload):
-        assert isinstance(original_payload, dict)  # narrows for mypy; already checked above
-        assert isinstance(replayed_payload, dict)
-        original_envelope_status = original_payload["status"]
-        replayed_envelope_status = replayed_payload["status"]
-        if original_envelope_status != replayed_envelope_status:
-            return LayerResult(
-                passed=False,
-                detail=(
-                    f"envelope status mismatch: brick={original_envelope_status!r} "
-                    f"replayed={replayed_envelope_status!r}"
-                ),
-            )
-
-    return LayerResult(passed=True, detail="status_code and envelope status (if present) match")
+    #: Human-readable diff lines -- empty when `overall_passed` is `True`. No per-layer
+    #: structure; every discrepancy (status code, payload field, schema violation) is just
+    #: another entry in this one flat list.
+    diffs: list[str]
 
 
 def _schema_type_matches(value: Any, expected_type: str) -> bool:
@@ -152,17 +117,6 @@ def _validate_against_schema(value: Any, schema: dict[str, Any], path: str) -> s
     return None
 
 
-def _evaluate_schema_layer(replayed_response: dict[str, Any], response_schema: dict[str, Any] | None) -> LayerResult:
-    if response_schema is None:
-        return LayerResult(passed=True, detail="no schema provided, skipped")
-
-    mismatch = _validate_against_schema(replayed_response.get("payload"), response_schema, "response.payload")
-    if mismatch is not None:
-        return LayerResult(passed=False, detail=mismatch)
-
-    return LayerResult(passed=True, detail="replayed payload matches response_schema")
-
-
 def _diff_paths(original: Any, replayed: Any, path: str, volatile_fields: frozenset[str], diffs: list[str]) -> None:
     if isinstance(original, dict) and isinstance(replayed, dict):
         all_keys = set(original) | set(replayed)
@@ -198,48 +152,23 @@ def _diff_paths(original: Any, replayed: Any, path: str, volatile_fields: frozen
         diffs.append(f"{path}: brick={original!r} replayed={replayed!r}")
 
 
-def _evaluate_pinned_field_layer(
-    brick: RegressionBrick, replayed_response: dict[str, Any], volatile_fields: frozenset[str]
-) -> LayerResult:
-    original_payload = brick.response.get("payload")
-    replayed_payload = replayed_response.get("payload")
-
-    diffs: list[str] = []
-    _diff_paths(original_payload, replayed_payload, "response.payload", volatile_fields, diffs)
-
-    if diffs:
-        return LayerResult(passed=False, detail="; ".join(diffs))
-
-    return LayerResult(passed=True, detail="payload matches after volatile-field masking")
-
-
 def evaluate_verdict(
     brick: RegressionBrick,
     replayed_response: dict[str, Any],
     response_schema: dict[str, Any] | None = None,
     volatile_fields: frozenset[str] = DEFAULT_VOLATILE_FIELDS,
 ) -> Verdict:
-    status_layer = _evaluate_status_layer(brick, replayed_response)
+    """Run it (the caller already has), diff it, pass or show the diff. `brick.response`/
+    `replayed_response` are diffed as one `{"status_code", "payload"}` structure -- a status-code
+    mismatch is just one more diff entry, never a gate that hides other differences. A schema
+    violation (only checked when `response_schema` is given) is appended the same way.
+    """
+    diffs: list[str] = []
+    _diff_paths(brick.response, replayed_response, "response", volatile_fields, diffs)
 
-    if not status_layer.passed:
-        # No point schema-validating or diffing a response already known not to match at
-        # the status level — layers 2/3 are reported as skipped rather than run.
-        skipped = LayerResult(passed=False, detail=_SKIPPED_DETAIL)
-        return Verdict(
-            overall_passed=False,
-            status_layer=status_layer,
-            schema_layer=skipped,
-            pinned_field_layer=skipped,
-        )
+    if response_schema is not None:
+        mismatch = _validate_against_schema(replayed_response.get("payload"), response_schema, "response.payload")
+        if mismatch is not None:
+            diffs.append(f"schema: {mismatch}")
 
-    schema_layer = _evaluate_schema_layer(replayed_response, response_schema)
-    pinned_field_layer = _evaluate_pinned_field_layer(brick, replayed_response, volatile_fields)
-
-    overall_passed = status_layer.passed and schema_layer.passed and pinned_field_layer.passed
-
-    return Verdict(
-        overall_passed=overall_passed,
-        status_layer=status_layer,
-        schema_layer=schema_layer,
-        pinned_field_layer=pinned_field_layer,
-    )
+    return Verdict(overall_passed=not diffs, diffs=diffs)

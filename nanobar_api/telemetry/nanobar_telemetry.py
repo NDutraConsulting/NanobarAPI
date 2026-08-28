@@ -56,6 +56,13 @@ class NanobarProps:
     scenario_description: str | None = None
     component_source_description: str | None = None
     domain: str | None = None
+    #: Additive alongside `domain`, per `.focusari/appbox-plan-with-tasks.md` -- a purely
+    #: structural classification (`"admin/app"`, `"admin/nanobar"`, `"api"`, `"workers"`), never
+    #: a replacement for `domain`. `NanobarEventBus._dispatch()` stamps `"workers"` on every
+    #: event-to-subscriber callback span unconditionally (every such callback runs off an HTTP
+    #: request, on a background thread, by construction -- fully generic, not app-specific);
+    #: an app tags its own worker call sites (e.g. `PostPublisherThread`) the same way directly.
+    app_box: str | None = None
 
 
 def _code_function_name(func: Callable[..., Any]) -> str:
@@ -228,6 +235,8 @@ class NanobarTelemetry:
                 payload["nanobar_component_source_description"] = nanobar.component_source_description
             if nanobar.domain is not None:
                 payload["nanobar_domain"] = nanobar.domain
+            if nanobar.app_box is not None:
+                payload["nanobar_app_box"] = nanobar.app_box
         event = Event(
             event_id=str(uuid.uuid4()),
             channel=self.channel,
@@ -251,7 +260,8 @@ class _SpanContext:
     async; both stay their original calling convention, never forced through a threadpool the
     way `nanobar_api.routing.adapt_handler` does for ASGI endpoints — a plain sync function
     decorated here must still be callable synchronously with no event loop required, since it
-    may be called from fully sync code, e.g. `nanobar_api.bricks.store`'s functions).
+    may be called from fully sync code, e.g. `nanobar_api.regression_brick.repository`'s
+    functions).
     """
 
     def __init__(

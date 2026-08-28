@@ -777,6 +777,34 @@ body {
   cursor: not-allowed;
 }
 
+/* Indeterminate -- there's no real progress fraction to report (a replay's own duration and the
+   TelemetryDrainWorker's own drain delay while polling for spans are both open-ended), so this
+   is a continuously-sliding bar, not a fill percentage. */
+.run-progress {
+  margin-top: 1rem;
+  height: 4px;
+  border-radius: 999px;
+  background: #e1e4e8;
+  overflow: hidden;
+}
+
+.run-progress-bar {
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: #4f46e5;
+  animation: run-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes run-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
 .run-status {
   margin: 1rem 0 0;
   color: #6b7280;
@@ -811,13 +839,18 @@ body {
   font-size: 0.95rem;
 }
 
-.run-verdict-layer {
-  margin: 0.25rem 0;
-  font-size: 0.85rem;
+.run-verdict-diffs {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  list-style: disc;
 }
 
-.run-verdict-layer-fail {
+.run-verdict-diff {
+  margin: 0.3rem 0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
   color: #b91c1c;
+  word-break: break-word;
 }
 
 .run-spans-wrap {
@@ -840,19 +873,28 @@ body {
   gap: 0.4rem;
 }
 
-.run-span-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  padding: 0.5rem 0.75rem;
+.run-span-details {
   background: #f4f5f7;
   border-radius: 8px;
   font-size: 0.82rem;
 }
 
-.run-span-row-error {
+.run-span-row-error .run-span-details {
   background: #fef2f2;
+}
+
+.run-span-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+/* Native disclosure marker is enough affordance on its own -- no extra JS, no custom icon. */
+.run-span-summary::marker {
+  color: #6b7280;
 }
 
 .run-span-name {
@@ -875,6 +917,19 @@ body {
   font-variant-numeric: tabular-nums;
   color: #6b7280;
   white-space: nowrap;
+}
+
+.run-span-payload {
+  margin: 0;
+  max-height: 280px;
+  padding: 0 0.9rem 0.9rem;
+  border-radius: 0 0 8px 8px;
+  /* Overrides .json-block's own `white-space: pre` -- this block lives inside a narrow, nested
+     row (unlike the Detail tab's full-width Request/Response panels, which keep the horizontal-
+     scroll behavior), so a long line (a captured SQL statement, a long JSON value) should wrap
+     instead of forcing horizontal scroll inside an already-cramped space. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .coverage-gaps-section {

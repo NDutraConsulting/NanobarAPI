@@ -13,7 +13,7 @@ from nanobar_api.middleware.trace import EventBusTraceMiddleware
 
 
 def _app_with_telemetry(*, readme_content: str | None = None) -> NanobarAPI:
-    # The readme route goes through the real NanobarValidatorGate/NanobarController pipeline,
+    # The readme route goes through the real NanobarAPIValidatorGate/NanobarAPIController pipeline,
     # which needs app.state.telemetry -- install_default_domains() itself doesn't wire this
     # (that's the caller's job, same as every other controller-touching app in this codebase;
     # a bare NanobarAPI() has no telemetry by design).
@@ -104,7 +104,7 @@ def test_api_readme_is_not_auto_registered_without_calling_install_default_domai
 
 
 def test_api_readme_produces_real_capture_bricks_without_crashing() -> None:
-    # Proves the readme route genuinely goes through the NanobarValidatorGate/NanobarController
+    # Proves the readme route genuinely goes through the NanobarAPIValidatorGate/NanobarAPIController
     # pipeline (capture_layer() calls succeed) -- not just that it happens to return 200.
     client = TestClient(_app_with_telemetry())
 
@@ -119,7 +119,7 @@ def test_api_readme_falls_back_gracefully_when_load_required_services_raises(
     # Mirrors test_controllers.py's own _FallbackController pattern: neither
     # load_required_services() nor load_fallback_services() here actually does anything (the
     # content is static app state, not a loaded service), so a forced failure of the "required"
-    # path must still recover to the same working response via NanobarController.__init__'s own
+    # path must still recover to the same working response via NanobarAPIController.__init__'s own
     # try/except -- not just that this controller's fallback is unreachable dead code.
     from nanobar_api.default_domains import ApiReadmeController
 

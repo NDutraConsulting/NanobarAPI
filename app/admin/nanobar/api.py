@@ -12,34 +12,37 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from nanobar_api import NanobarProps, NanobarTelemetry, error, success
 from nanobar_api.admin_auth import ADMIN_SESSION_COOKIE, CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SQLiteSessionBackend
-from nanobar_api.bricks import store as bricks_store
-from nanobar_api.bricks.replay import replay_brick
-from nanobar_api.bricks.schema import RegressionBrick
-from nanobar_api.bricks.verdict import evaluate_verdict
 from nanobar_api.dynamic_taxonomy import get_or_create_entry, list_entries, split_dynamic_nanobar_type
 from nanobar_api.eventbus import store as events_store
-from nanobar_api.middleware.trace import SQLiteTraceCaptureToggle, current_span_id, current_trace_id
+from nanobar_api.middleware.trace import SQLiteTraceCaptureToggle
+from nanobar_api.nanobar.model import nanobar_to_dict
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.regression_brick.model import RegressionBrick
+from nanobar_api.regression_brick.regression_brick_analysis_service import ReplayBrickRequest, ReplayBrickService
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
 from nanobar_api.route_manifest import load_route_manifest, write_route_manifest
+from nanobar_api.shadow import SHADOW_MODE_HEADER, SHADOW_MODE_VALUE
 from nanobar_api.taxonomy import (
     NanobarTypeTaxonomy,
-    compute_regression_weight,
     detect_coverage_gaps,
     resolve_taxonomy_entry,
 )
+from nanobar_api.telemetry.span_repository import SpanRepository
+from nanobar_api.telemetry.trace_repository import TraceRepository
 from nanobar_api.worker_utils import get_worker_log
 
-from .db import get_connection
 from .dynamic_taxonomy_db import get_connection as get_dynamic_taxonomy_connection
 from .events_db import get_connection as get_events_connection
 from .generate_bricks import generate_dashboard_bricks
 from .nanobar_refresh import refresh_nanobars_from_manifest
 from .refresh_log import SQLiteRefreshLog
-from .replay_app import get_replay_app
+from .replay_seeders import seed_for_replay
 
 #: Fixed prefixes this project's own runtime actually produces as dynamically-suffixed
 #: nanobar_type values (see nanobar_api/telemetry.py's NanobarProps.type call sites) -- not an
@@ -134,14 +137,57 @@ def _parse_list_param(request: Request, name: str) -> list[str] | None:
     return result or None
 
 
-def _db_path(request: Request) -> str:
-    db_path: str = request.app.state.db_path
-    return db_path
+def _brick_to_dict(brick: RegressionBrick) -> dict[str, Any]:
+    """Same field set `dataclasses.asdict()` produced against the old `bricks.schema.
+    RegressionBrick` frozen dataclass -- built explicitly since the new SQLAlchemy ORM row isn't
+    a dataclass and carries extra ORM-only fields (`created_at`) this API contract never
+    exposed."""
+    return {
+        "regression_brick_id": brick.regression_brick_id,
+        "schema_version": brick.schema_version,
+        "brick_version": brick.brick_version,
+        "source": brick.source,
+        "request": brick.request,
+        "response": brick.response,
+        "content_hash": brick.content_hash,
+        "created_by": brick.created_by,
+        "trace_refs": brick.trace_refs,
+        "capture_policy_id": brick.capture_policy_id,
+        "forked_from_regression_brick_id": brick.forked_from_regression_brick_id,
+        "regression_scenario_type": brick.regression_scenario_type,
+    }
 
 
 def _events_db_path(request: Request) -> str:
     db_path: str = request.app.state.events_db_path
     return db_path
+
+
+def _telemetry_session(request: Request) -> Session:
+    """A fresh session against `nanobar_api_telemetry.db` -- caller closes it, same convention
+    as `request.app.state.bricks_session_factory()`'s own call sites in this file."""
+    session_factory = request.app.state.telemetry_session_factory
+    session: Session = session_factory()
+    return session
+
+
+def _span_to_dict(span: Any) -> dict[str, Any]:
+    """Same JSON shape `dataclasses.asdict()` produced against the old raw `Event` -- `event_id`
+    is `Span`'s own real primary key (see `nanobar_api/telemetry/model.py`'s `Span` docstring:
+    `span_id` is a real but **not unique** correlation column, since `EventBusTraceMiddleware`/
+    `SnapshotMiddleware` can both capture the same span under the same `span_id`), so the
+    frontend's own use of `event_id` as an opaque unique-id string for DOM anchoring/selection
+    (`app/pages/trace/trace-{controller,ui}.js`) still gets a genuinely unique value.
+    """
+    return {
+        "event_id": span.event_id,
+        "channel": span.channel,
+        "trace_id": span.trace_id,
+        "span_id": span.span_id,
+        "recorded_at_ns": span.recorded_at_ns,
+        "monotonic_ns": span.monotonic_ns,
+        "payload": span.payload_json,
+    }
 
 
 def _telemetry(request: Request) -> NanobarTelemetry:
@@ -186,12 +232,12 @@ def _effective_taxonomy(request: Request, nanobar_type: str) -> NanobarTypeTaxon
     return {**static_taxonomy, nanobar_type: entry}
 
 
-def _brick_detail_dict(conn: Any, brick: RegressionBrick) -> dict[str, Any]:
-    status = bricks_store.get_review_status(conn, brick.regression_brick_id)
-    scenario = bricks_store.get_brick_scenario(conn, brick.regression_brick_id)
-    tags = bricks_store.get_tags_for_brick(conn, brick.regression_brick_id)
+def _brick_detail_dict(brick_repository: RegressionBrickRepository, brick: RegressionBrick) -> dict[str, Any]:
+    status = brick_repository.get_review_status(brick.regression_brick_id)
+    scenario = brick_repository.get_scenario(brick.regression_brick_id)
+    tags = brick_repository.tags_for(brick.regression_brick_id)
     return {
-        **dataclasses.asdict(brick),
+        **_brick_to_dict(brick),
         "review_status": dataclasses.asdict(status),
         "scenario": dataclasses.asdict(scenario),
         "tags": tags,
@@ -204,22 +250,22 @@ def _record_refresh(request: Request, kind: str, summary: str) -> None:
 
 
 async def generate_bricks_action(request: Request) -> JSONResponse:
-    """POST /api/generate-bricks -> identifies captured event-spans on events.db's "snapshot"
-    channel and generates their regression_bricks.db bricks (`generate_bricks()` +
+    """POST /api/generate-bricks -> identifies captured spans on nanobar_api_telemetry.db's
+    "snapshot" channel and generates their regression_bricks.db bricks (`generate_bricks()` +
     `bind_new_bricks_to_nanobars()`), the same operation
     `examples/generate_dashboard_bricks.py` runs from a terminal -- exposed here as a
     dashboard button so it doesn't require dropping to a shell. Runs synchronously against real
     SQLite files; for this local-beta single-operator dashboard that's acceptable (the live run
     that motivated this feature: 2,276 events -> 18 bricks in well under a second). Recorded as
     the `"bricks"` refresh cycle on `/admin/nanobar/dashboard/settings`."""
-    events_conn = get_events_connection(_events_db_path(request))
-    bricks_conn = get_connection(_db_path(request))
+    telemetry_session = _telemetry_session(request)
+    bricks_session = request.app.state.bricks_session_factory()
     try:
         manifest_entries = load_route_manifest(request.app.state.route_manifest_path)
-        result = generate_dashboard_bricks(events_conn, bricks_conn, route_manifest_entries=manifest_entries)
+        result = generate_dashboard_bricks(telemetry_session, bricks_session, route_manifest_entries=manifest_entries)
     finally:
-        events_conn.close()
-        bricks_conn.close()
+        telemetry_session.close()
+        bricks_session.close()
     _record_refresh(
         request,
         "bricks",
@@ -232,20 +278,20 @@ async def generate_bricks_action(request: Request) -> JSONResponse:
 async def refresh_nanobars_action(request: Request) -> JSONResponse:
     """POST /api/refresh/nanobars -> reconciles nanobars against the current route manifest
     (`nanobar.api-routes.json`): creates an `unclassified` placeholder for any declared route
-    with no nanobar yet, and backfills/corrects `domain` on existing route-keyed nanobars. See
-    `admin/nanobar/nanobar_refresh.py`'s module docstring for why. Recorded as the
+    with no nanobar yet, and backfills/corrects `domain`/`app_box` on existing route-keyed
+    nanobars. See `admin/nanobar/nanobar_refresh.py`'s module docstring for why. Recorded as the
     `"nanobars"` refresh cycle on `/admin/nanobar/dashboard/settings`."""
     manifest_entries = load_route_manifest(request.app.state.route_manifest_path)
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        result = refresh_nanobars_from_manifest(conn, manifest_entries)
+        result = refresh_nanobars_from_manifest(NanobarRepository(session), manifest_entries)
     finally:
-        conn.close()
+        session.close()
     _record_refresh(
         request,
         "nanobars",
         f"{result.routes_scanned} route(s) scanned -- {result.nanobars_created} nanobar(s) created, "
-        f"{result.domains_updated} domain(s) updated",
+        f"{result.domains_updated} domain(s) updated, {result.app_boxes_updated} app_box(es) updated",
     )
     return JSONResponse(success(dataclasses.asdict(result)))
 
@@ -275,10 +321,10 @@ async def refresh_status(request: Request) -> JSONResponse:
 
 
 async def list_nanobars(request: Request) -> JSONResponse:
-    """GET /api/nanobars?nanobar_type=&domain=&target_type=&q=&page=&page_size= -> envelope
-    success with `{"items": [...], "page":, "page_size":, "total":}` -- `q` free-text searches
-    the same fields already rendered on the list/detail pages (label/scenario/component/
-    domain/type/id), `page_size` defaults to 50.
+    """GET /api/nanobars?nanobar_type=&domain=&app_box=&target_type=&q=&page=&page_size= ->
+    envelope success with `{"items": [...], "page":, "page_size":, "total":}` -- `q` free-text
+    searches the same fields already rendered on the list/detail pages (label/scenario/component/
+    domain/app_box/type/id), `page_size` defaults to 50.
 
     `nanobar_type` is the dashboard's real navigation axis -- the taxonomy layer type
     (`validator-request-response`, `orm-request-response`, ...; see `nanobar_api/taxonomy.py`)
@@ -294,8 +340,13 @@ async def list_nanobars(request: Request) -> JSONResponse:
     by "Nanobar refresh". This is what actually separates this demo's own nanobars from an
     unrelated traffic source seeded into the same database (e.g. `seed_kahnban_bricks.py`,
     whose nanobars carry its own domain values like `"boards"`/`"lists"`/`"cards"` and never
-    show up under this app's own domains). `bricks_store.UNMAPPED_DOMAIN` selects nanobars with
+    show up under this app's own domains). `nanobar_api.nanobar.repository.UNMAPPED_DOMAIN` selects nanobars with
     no domain at all (`domain IS NULL` -- never touched by anything domain-aware).
+
+    `app_box` is `domain`'s additive sibling (per `.focusari/appbox-plan-with-tasks.md`) -- a
+    purely structural classification (`"admin/app"`, `"admin/nanobar"`, `"api"`, `"workers"`),
+    independently filterable, never a replacement for `domain`.
+    `nanobar_api.nanobar.repository.UNMAPPED_APP_BOX` is `UNMAPPED_DOMAIN`'s exact counterpart.
 
     The DB query is wrapped in its own nested `NanobarTelemetry` span — the first real
     "api-to-db" boundary in this project, nested under `EventBusTraceMiddleware`'s HTTP-layer
@@ -308,35 +359,37 @@ async def list_nanobars(request: Request) -> JSONResponse:
     target_type = request.query_params.get("target_type")
     nanobar_type = request.query_params.get("nanobar_type")
     domain = request.query_params.get("domain")
+    app_box = request.query_params.get("app_box")
     q = request.query_params.get("q") or None
     page, page_size, page_error = _parse_page_params(request)
     if page_error is not None:
         return JSONResponse(error(page_error), status_code=400)
 
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
+        nanobar_repository = NanobarRepository(session)
         with _telemetry(request).span("dashboard.nanobars.list", nanobar=NanobarProps(type="api-to-db")):
-            nanobars = bricks_store.list_nanobars(
-                conn,
+            nanobars = nanobar_repository.list_nanobars(
                 target_type=target_type,
                 nanobar_type=nanobar_type,
                 domain=domain,
+                app_box=app_box,
                 q=q,
                 page=page,
                 page_size=page_size,
             )
-            total = bricks_store.count_nanobars(
-                conn, target_type=target_type, nanobar_type=nanobar_type, domain=domain, q=q
+            total = nanobar_repository.count_nanobars(
+                target_type=target_type, nanobar_type=nanobar_type, domain=domain, app_box=app_box, q=q
             )
         data = {
-            "items": [dataclasses.asdict(n) for n in nanobars],
+            "items": [nanobar_to_dict(n) for n in nanobars],
             "page": page,
             "page_size": page_size,
             "total": total,
         }
         return JSONResponse(success(data))
     finally:
-        conn.close()
+        session.close()
 
 
 async def nanobar_detail(request: Request) -> JSONResponse:
@@ -348,338 +401,145 @@ async def nanobar_detail(request: Request) -> JSONResponse:
     only returns one page at a time (the target nanobar might not even be on page 1).
     """
     nanobar_id = request.path_params["nanobar_id"]
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        nanobar = bricks_store.get_nanobar(conn, nanobar_id)
+        nanobar = NanobarRepository(session).get(nanobar_id)
         if nanobar is None:
             return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
-        return JSONResponse(success(dataclasses.asdict(nanobar)))
+        return JSONResponse(success(nanobar_to_dict(nanobar)))
     finally:
-        conn.close()
+        session.close()
 
 
 async def nanobar_bricks(request: Request) -> JSONResponse:
     """GET /api/nanobars/{nanobar_id}/bricks -> bricks bound to that nanobar, with review status."""
     nanobar_id = request.path_params["nanobar_id"]
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        if bricks_store.get_nanobar(conn, nanobar_id) is None:
+        nanobar_repository = NanobarRepository(session)
+        if nanobar_repository.get(nanobar_id) is None:
             return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
-        bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
-        data = [_brick_detail_dict(conn, brick) for brick in bricks]
+        bricks = nanobar_repository.bricks_for(nanobar_id)
+        brick_repository = RegressionBrickRepository(session)
+        data = [_brick_detail_dict(brick_repository, brick) for brick in bricks]
         return JSONResponse(success(data, type_="array"))
     finally:
-        conn.close()
+        session.close()
 
 
 async def brick_detail(request: Request) -> JSONResponse:
     """GET /api/bricks/{brick_id} -> one brick's full detail plus its review status."""
     brick_id = request.path_params["brick_id"]
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        brick = bricks_store.get_brick(conn, brick_id)
+        brick_repository = RegressionBrickRepository(session)
+        brick = brick_repository.get(brick_id)
         if brick is None:
             return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-        return JSONResponse(success(_brick_detail_dict(conn, brick)))
+        return JSONResponse(success(_brick_detail_dict(brick_repository, brick)))
     finally:
-        conn.close()
-
-
-#: `regression_scenario_type` -> the HTTP status code that scenario implies, for capture_layer()
-#: -sourced bricks specifically (`_classify_capture_layer_scenario()` in bricks/generate.py's
-#: own narrower three-value vocabulary) -- the inverse of that classification, used only to give
-#: `evaluate_verdict()`'s status layer something real to compare against (see
-#: `_verdict_inputs()` below). Falls back to 200 (the common case) for a brick with no/unknown
-#: `regression_scenario_type`.
-_CAPTURE_LAYER_SCENARIO_STATUS_CODES = {"success": 200, "invalid_input": 400, "server_error": 500}
-
-
-def _verdict_inputs(
-    brick: RegressionBrick, replayed_response: dict[str, Any]
-) -> tuple[RegressionBrick, dict[str, Any]]:
-    """`evaluate_verdict()` expects both a brick's own `response` and the freshly
-    `replayed_response` in the same `{"status_code", "payload"}` HTTP shape. A
-    `capture_layer()`-sourced brick's `response` (`source["route_key"]` stamped) never had that
-    shape at all -- it's the controller's raw return value (e.g. a post's own fields directly),
-    since `capture_layer()` never observed an HTTP status code in the first place. Comparing it
-    against `replayed_response` (always real-HTTP-shaped, from `replay_brick()`'s own
-    `TestClient` round trip) unadapted would compare `status_code=None` against a real
-    `status_code=200` on *every* capture_layer()-sourced brick, failing the status layer
-    unconditionally regardless of whether the replay actually matched.
-
-    Adapts both sides onto the same footing for a capture_layer()-sourced brick: the brick's own
-    response wrapped as `{"status_code": <derived from regression_scenario_type>, "payload":
-    response}`, and the replayed envelope's inner `result.data` unwrapped to match (the
-    equivalent "just the controller's return value" shape). A `SnapshotMiddleware`-sourced brick
-    (no `route_key`) is already HTTP-shaped -- passed through unchanged.
-    """
-    if brick.source.get("route_key") is None:
-        return brick, replayed_response
-
-    expected_status_code = _CAPTURE_LAYER_SCENARIO_STATUS_CODES.get(brick.regression_scenario_type or "", 200)
-    comparison_brick = dataclasses.replace(
-        brick, response={"status_code": expected_status_code, "payload": brick.response}
-    )
-
-    replayed_payload = replayed_response.get("payload")
-    unwrapped_data = replayed_payload.get("result", {}).get("data") if isinstance(replayed_payload, dict) else None
-    comparison_replayed_response = {"status_code": replayed_response.get("status_code"), "payload": unwrapped_data}
-
-    return comparison_brick, comparison_replayed_response
+        session.close()
 
 
 async def replay_brick_action(request: Request) -> JSONResponse:
-    """POST /api/bricks/{brick_id}/replay -> hermetically replays this brick against a shadow
-    app instance (`replay_app.py` -- shares this app's bricks/events/admin databases, but a
-    separate blog database, so replay writes never touch real local data), then evaluates a
-    `Verdict` comparing the replay to the brick's originally captured response.
+    """POST /api/bricks/{brick_id}/replay -> replays this brick against **this same running
+    app**, over an in-process `httpx2.Client` (`request.app.state.replay_client`, a
+    `starlette.testclient.TestClient` bound to this app -- see `app/main.py`'s own docstring),
+    then evaluates a `Verdict` comparing the replay to the brick's originally captured response.
+
+    Isolation from live data comes from the `nanobar-mode: shadow` header attached below, not
+    from talking to a separately-run deployment -- `nanobar_api.shadow.ShadowModeMiddleware`
+    (mounted on this very app) reads it and sets `current_shadow_mode` for the duration of the
+    replayed request, which `app.db.blog_session.resolve_session_factory()` checks to route the
+    replay's own blog-domain reads/writes onto `blog_shadow_session_factory` instead of the live
+    one. Replaces the earlier two designs this route went through in turn: the original
+    per-request, in-process `replay_app.py` shadow app (whose ASGI lifespan was never entered, so
+    its background workers never ran), and then a genuinely separate, persistently-running
+    `shadow_server.py` process on its own port (which fixed that, at the cost of a second process
+    to keep running) -- collapsing back to one process, now that the header-flag mechanism above
+    makes a second app instance unnecessary for lifespan/background-worker correctness too.
 
     A synthesized `traceparent` header threads a trace id this handler chooses through the
-    replayed request, so every span the replay produces (the HTTP-layer span, and every nested
-    controller/validator/service/orm `capture_layer()` span it triggers) shares one real,
-    fetchable trace id — returned here as `trace_id`, what the Run tab's "Refresh" button passes
-    to `GET .../api/traces/{trace_id}/spans`. One more span, tagged `replay-{original
-    nanobar_type}`, is emitted directly under that same trace id before the replay fires — a
-    first-class, filterable "this was a replay, not organic traffic" fact, through the same
-    nanobar-type include-checkbox mechanism every other trace already uses.
+    replayed request -- `EventBusTraceMiddleware` (this same app's own, already running)
+    extracts it (W3C trace context propagation, `propagate.extract()`), so every span the replay
+    produces (the HTTP-layer span, and every nested controller/validator/service/orm
+    `capture_layer()` span it triggers) shares this same, real, fetchable trace id — returned
+    here as `trace_id`, what the Run tab's "Refresh" button passes to
+    `GET .../api/traces/{trace_id}/spans`. Genuinely fetchable now for the same reason isolation
+    works: this app's own `TelemetryDrainWorker` is already running for real (it's the live
+    server, not a per-request app whose lifespan is never entered).
     """
     brick_id = request.path_params["brick_id"]
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        brick = bricks_store.get_brick(conn, brick_id)
+        brick = RegressionBrickRepository(session).get(brick_id)
     finally:
-        conn.close()
+        session.close()
     if brick is None:
         return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
 
-    shadow_app = get_replay_app(
-        db_path=_db_path(request),
-        events_db_path=_events_db_path(request),
-        app_admin_db_path=request.app.state.app_admin_db_path,
-        nanobar_admin_db_path=request.app.state.nanobar_admin_db_path,
-        blog_db_path=request.app.state.blog_db_path,
-    )
-
-    # A replayed mutating admin route (everything under /admin/app/*) is session-gated, but
-    # CapturePolicy never captures authorization/cookie headers in the first place -- nothing
-    # to resend. Bootstrapped directly (skipping password verification) since triggering a
-    # replay is itself already an authenticated admin action; no separate credential to prove.
-    # Every capture_layer()-sourced brick in this app comes from the blog domain (admin/app's
-    # mutating routes, or the public, ungated /book-appointment) -- app_admin's backend is the
-    # only one ever relevant here; nanobar-admin's own routes never go through capture_layer().
-    session_backend = SQLiteSessionBackend(shadow_app.state.app_admin_db_path)
-    session = session_backend.create(ttl_seconds=300.0)
-    session_backend.authenticate(session.session_id)
-    csrf_token = uuid.uuid4().hex
-
-    replay_trace_id = uuid.uuid4().hex
-    replay_span_id = uuid.uuid4().hex[:16]
-
-    trace_token = current_trace_id.set(replay_trace_id)
-    span_token = current_span_id.set(replay_span_id)
+    # Ensures the shadow db has whatever pre-existing row this brick's replay depends on (e.g.
+    # an update-post brick needs a Post with its own post_id to already exist) -- the shadow
+    # replica is deliberately empty otherwise, so a replay targeting a resource that only exists
+    # in live data would 404 through no fault of the app's own code. No-ops for any route_key
+    # with no registered seeder. `seed_teardown`, when not None, removes whatever this call just
+    # seeded once the replay is done (below, in this function's own `finally`) -- without it, the
+    # shadow db would accumulate one permanent row per distinct brick ever replayed. See
+    # app/admin/nanobar/replay_seeders.py's own module docstring.
+    seed_teardown = seed_for_replay(brick, request.app.state.blog_shadow_session_factory)
     try:
-        nanobar_type = brick.source.get("nanobar_type")
-        with shadow_app.state.telemetry.span(
-            f"replay.{brick_id}", nanobar=NanobarProps(type=f"replay-{nanobar_type}" if nanobar_type else "replay")
-        ):
-            pass
-    finally:
-        current_trace_id.reset(trace_token)
-        current_span_id.reset(span_token)
+        # A replayed mutating admin route (everything under /admin/app/*) is session-gated, but
+        # CapturePolicy never captures authorization/cookie headers in the first place -- nothing
+        # to resend. Bootstrapped directly (skipping password verification) since triggering a
+        # replay is itself already an authenticated admin action; no separate credential to
+        # prove. Same app_admin_db_path the replayed request will itself be checked against
+        # (it's the same running app now, not a separate shadow instance with its own copy) -- a
+        # session created here is valid there by construction.
+        session_backend = SQLiteSessionBackend(request.app.state.app_admin_db_path)
+        admin_session = session_backend.create(ttl_seconds=300.0)
+        session_backend.authenticate(admin_session.session_id)
+        csrf_token = uuid.uuid4().hex
 
-    replayed_response = replay_brick(
-        shadow_app,
-        brick,
-        extra_headers={
-            "traceparent": f"00-{replay_trace_id}-{replay_span_id}-01",
-            "Cookie": f"{ADMIN_SESSION_COOKIE}={session.session_id}; {CSRF_COOKIE_NAME}={csrf_token}",
-            CSRF_HEADER_NAME: csrf_token,
-        },
-    )
-    verdict_brick, verdict_replayed_response = _verdict_inputs(brick, replayed_response)
-    verdict = evaluate_verdict(verdict_brick, verdict_replayed_response)
+        replay_trace_id = uuid.uuid4().hex
+        replay_span_id = uuid.uuid4().hex[:16]
+
+        analysis_session = request.app.state.bricks_session_factory()
+        try:
+            analysis_service = ReplayBrickService(
+                request.app.state.telemetry,
+                RegressionBrickRepository(analysis_session),
+                request.app.state.replay_client,
+            )
+            result = analysis_service(
+                ReplayBrickRequest(
+                    regression_brick_id=brick_id,
+                    extra_headers={
+                        "traceparent": f"00-{replay_trace_id}-{replay_span_id}-01",
+                        "Cookie": f"{ADMIN_SESSION_COOKIE}={admin_session.session_id}; {CSRF_COOKIE_NAME}={csrf_token}",
+                        CSRF_HEADER_NAME: csrf_token,
+                        SHADOW_MODE_HEADER.decode("latin-1"): SHADOW_MODE_VALUE.decode("latin-1"),
+                    },
+                )
+            )
+        finally:
+            analysis_session.close()
+    finally:
+        # Runs whether the replay above succeeded, failed, or raised -- a failed replay must not
+        # leak its seeded row any more than a successful one does.
+        if seed_teardown is not None:
+            seed_teardown()
+
+    if result.status == "error" or result.result.data is None:
+        return JSONResponse(error(result.result.msg_summary), status_code=400)
 
     return JSONResponse(
         success(
             {
                 "trace_id": replay_trace_id,
-                "replayed_response": replayed_response,
-                "verdict": dataclasses.asdict(verdict),
+                **result.result.data,
             }
         )
     )
-
-
-async def set_review_status(request: Request) -> JSONResponse:
-    """PATCH/POST /api/bricks/{brick_id}/review-status with body {"status": "..."}.
-
-    Returns envelope success with the updated status, or envelope error (never an unhandled
-    500) when the brick doesn't exist, the body isn't valid JSON, the body has no string
-    `status` field, or the status value isn't one of `REVIEW_STATUSES`.
-    """
-    brick_id = request.path_params["brick_id"]
-    conn = get_connection(_db_path(request))
-    try:
-        if bricks_store.get_brick(conn, brick_id) is None:
-            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(error("request body must be valid JSON"), status_code=400)
-
-        status_value = body.get("status") if isinstance(body, dict) else None
-        if not isinstance(status_value, str):
-            return JSONResponse(error("request body must include a 'status' string field"), status_code=400)
-
-        try:
-            bricks_store.set_review_status(conn, brick_id, status_value, updated_by="dashboard")
-        except ValueError as exc:
-            return JSONResponse(error(str(exc)), status_code=400)
-
-        updated = bricks_store.get_review_status(conn, brick_id)
-        return JSONResponse(success(dataclasses.asdict(updated)))
-    finally:
-        conn.close()
-
-
-async def set_brick_scenario(request: Request) -> JSONResponse:
-    """PATCH/POST /api/bricks/{brick_id}/scenario with body
-    {"regression_scenario_label": "...", "description": "..."}.
-
-    Both fields are optional and independent — an omitted field keeps its current stored
-    value (partial update), it is not overwritten with null.
-    """
-    brick_id = request.path_params["brick_id"]
-    conn = get_connection(_db_path(request))
-    try:
-        if bricks_store.get_brick(conn, brick_id) is None:
-            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(error("request body must be valid JSON"), status_code=400)
-        if not isinstance(body, dict):
-            return JSONResponse(error("request body must be a JSON object"), status_code=400)
-
-        current = bricks_store.get_brick_scenario(conn, brick_id)
-        label = body.get("regression_scenario_label", current.regression_scenario_label)
-        description = body.get("description", current.description)
-        if label is not None and not isinstance(label, str):
-            return JSONResponse(error("'regression_scenario_label' must be a string"), status_code=400)
-        if description is not None and not isinstance(description, str):
-            return JSONResponse(error("'description' must be a string"), status_code=400)
-
-        bricks_store.set_brick_scenario(
-            conn, brick_id, regression_scenario_label=label, description=description, updated_by="dashboard"
-        )
-        updated = bricks_store.get_brick_scenario(conn, brick_id)
-        return JSONResponse(success(dataclasses.asdict(updated)))
-    finally:
-        conn.close()
-
-
-async def add_brick_tag(request: Request) -> JSONResponse:
-    """POST /api/bricks/{brick_id}/tags with body {"tag": "..."} -> the brick's updated tag list."""
-    brick_id = request.path_params["brick_id"]
-    conn = get_connection(_db_path(request))
-    try:
-        if bricks_store.get_brick(conn, brick_id) is None:
-            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(error("request body must be valid JSON"), status_code=400)
-
-        tag = body.get("tag") if isinstance(body, dict) else None
-        if not isinstance(tag, str) or not tag:
-            return JSONResponse(error("request body must include a non-empty 'tag' string field"), status_code=400)
-
-        bricks_store.add_brick_tag(conn, brick_id, tag)
-        return JSONResponse(success(bricks_store.get_tags_for_brick(conn, brick_id), type_="array"))
-    finally:
-        conn.close()
-
-
-async def remove_brick_tag(request: Request) -> JSONResponse:
-    """DELETE /api/bricks/{brick_id}/tags/{tag} -> the brick's updated tag list."""
-    brick_id = request.path_params["brick_id"]
-    tag = request.path_params["tag"]
-    conn = get_connection(_db_path(request))
-    try:
-        if bricks_store.get_brick(conn, brick_id) is None:
-            return JSONResponse(error(f"brick {brick_id!r} not found"), status_code=404)
-
-        bricks_store.remove_brick_tag(conn, brick_id, tag)
-        return JSONResponse(success(bricks_store.get_tags_for_brick(conn, brick_id), type_="array"))
-    finally:
-        conn.close()
-
-
-async def update_nanobar(request: Request) -> JSONResponse:
-    """PATCH /api/nanobars/{nanobar_id} with body
-    {"label": "...", "scenario_description": "...", "component_source_description": "...",
-    "domain": "...", "criticality": 0.0-1.0}.
-
-    All five fields are optional and independent — an omitted field keeps its current
-    stored value (partial update), it is not overwritten with null. `source_info` is not
-    editable here — it's auto-derived structured data, not a human-edited field.
-    """
-    nanobar_id = request.path_params["nanobar_id"]
-    conn = get_connection(_db_path(request))
-    try:
-        current = bricks_store.get_nanobar(conn, nanobar_id)
-        if current is None:
-            return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
-
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(error("request body must be valid JSON"), status_code=400)
-        if not isinstance(body, dict):
-            return JSONResponse(error("request body must be a JSON object"), status_code=400)
-
-        string_fields = {
-            "label": body.get("label", current.label),
-            "scenario_description": body.get("scenario_description", current.scenario_description),
-            "component_source_description": body.get(
-                "component_source_description", current.component_source_description
-            ),
-            "domain": body.get("domain", current.domain),
-        }
-        for name, value in string_fields.items():
-            if value is not None and not isinstance(value, str):
-                return JSONResponse(error(f"{name!r} must be a string"), status_code=400)
-
-        criticality = body.get("criticality", current.criticality)
-        if (
-            not isinstance(criticality, (int, float))
-            or isinstance(criticality, bool)
-            or not (0.0 <= criticality <= 1.0)
-        ):
-            return JSONResponse(error("'criticality' must be a number between 0.0 and 1.0"), status_code=400)
-
-        bricks_store.update_nanobar(conn, nanobar_id, criticality=float(criticality), **string_fields)
-
-        if float(criticality) != current.criticality:
-            # regression_weight depends on criticality (nanobar_api.taxonomy.
-            # compute_regression_weight) -- recompute it too, same "recompute on criticality
-            # change" trigger the taxonomy plan's own Phase B calls for.
-            bound_bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
-            refreshed = bricks_store.get_nanobar(conn, nanobar_id)
-            assert refreshed is not None
-            weight = compute_regression_weight(
-                refreshed, bound_bricks, _effective_taxonomy(request, refreshed.nanobar_type)
-            )
-            bricks_store.set_regression_weight(conn, nanobar_id, weight)
-
-        updated = bricks_store.get_nanobar(conn, nanobar_id)
-        assert updated is not None
-        return JSONResponse(success(dataclasses.asdict(updated)))
-    finally:
-        conn.close()
 
 
 async def nanobar_coverage_gaps(request: Request) -> JSONResponse:
@@ -699,27 +559,28 @@ async def nanobar_coverage_gaps(request: Request) -> JSONResponse:
     selects it directly on the trace detail page), or `null` if none has ever been captured.
     """
     nanobar_id = request.path_params["nanobar_id"]
-    conn = get_connection(_db_path(request))
+    session = request.app.state.bricks_session_factory()
     try:
-        nanobar = bricks_store.get_nanobar(conn, nanobar_id)
+        nanobar_repository = NanobarRepository(session)
+        nanobar = nanobar_repository.get(nanobar_id)
         if nanobar is None:
             return JSONResponse(error(f"nanobar {nanobar_id!r} not found"), status_code=404)
 
         effective_taxonomy = _effective_taxonomy(request, nanobar.nanobar_type)
 
         if resolve_taxonomy_entry(effective_taxonomy, nanobar.nanobar_type) is None:
-            events_conn = get_events_connection(_events_db_path(request))
+            telemetry_session = _telemetry_session(request)
             try:
-                span = events_store.find_latest_span_by_nanobar_type(events_conn, "trace", nanobar.nanobar_type)
+                span = SpanRepository(telemetry_session).find_latest_by_nanobar_type("trace", nanobar.nanobar_type)
             finally:
-                events_conn.close()
+                telemetry_session.close()
             related_span = (
                 None
                 if span is None
                 else {
                     "trace_id": span.trace_id,
                     "event_id": span.event_id,
-                    "name": span.payload.get("name"),
+                    "name": span.payload_json.get("name"),
                     "recorded_at_ns": span.recorded_at_ns,
                 }
             )
@@ -734,11 +595,11 @@ async def nanobar_coverage_gaps(request: Request) -> JSONResponse:
                 )
             )
 
-        bound_bricks = bricks_store.get_bricks_for_nanobar(conn, nanobar_id)
+        bound_bricks = nanobar_repository.bricks_for(nanobar_id)
         gaps = detect_coverage_gaps(nanobar, bound_bricks, effective_taxonomy)
         return JSONResponse(success({"status": "classified", "gaps": gaps}))
     finally:
-        conn.close()
+        session.close()
 
 
 async def list_dynamic_taxonomy_entries(request: Request) -> JSONResponse:
@@ -839,16 +700,17 @@ async def list_traces(request: Request) -> JSONResponse:
     nanobar_types = _parse_list_param(request, "nanobar_types")
     components = _parse_list_param(request, "components")
 
-    conn = get_events_connection(_events_db_path(request))
+    telemetry_session = _telemetry_session(request)
     try:
+        trace_repository = TraceRepository(telemetry_session)
         filters: dict[str, Any] = {
             "created_after_ns": created_after_ns,
             "created_before_ns": created_before_ns,
             "nanobar_types": nanobar_types,
             "components": components,
         }
-        summaries = events_store.list_trace_ids(conn, channel, page=page, page_size=page_size, **filters)
-        total = events_store.count_trace_ids(conn, channel, **filters)
+        summaries = trace_repository.list_trace_summaries(channel, page=page, page_size=page_size, **filters)
+        total = trace_repository.count_trace_summaries(channel, **filters)
         data = {
             "items": [dataclasses.asdict(s) for s in summaries],
             "page": page,
@@ -857,7 +719,7 @@ async def list_traces(request: Request) -> JSONResponse:
         }
         return JSONResponse(success(data))
     finally:
-        conn.close()
+        telemetry_session.close()
 
 
 async def trace_facets(request: Request) -> JSONResponse:
@@ -875,29 +737,29 @@ async def trace_facets(request: Request) -> JSONResponse:
     if before_error is not None:
         return JSONResponse(error(before_error), status_code=400)
 
-    conn = get_events_connection(_events_db_path(request))
+    telemetry_session = _telemetry_session(request)
     try:
-        nanobar_types, components = events_store.get_trace_facets(
-            conn, channel, created_after_ns=created_after_ns, created_before_ns=created_before_ns
+        nanobar_types, components = SpanRepository(telemetry_session).distinct_facets(
+            channel, created_after_ns=created_after_ns, created_before_ns=created_before_ns
         )
         return JSONResponse(success({"nanobar_types": nanobar_types, "components": components}))
     finally:
-        conn.close()
+        telemetry_session.close()
 
 
 async def trace_spans(request: Request) -> JSONResponse:
-    """GET /api/traces/{trace_id}/spans?channel=... -> that trace's events, ordered by
+    """GET /api/traces/{trace_id}/spans?channel=... -> that trace's spans, ordered by
     monotonic_ns. `channel` defaults to unset (all channels for this trace_id)."""
     trace_id = request.path_params["trace_id"]
     channel = request.query_params.get("channel")
-    conn = get_events_connection(_events_db_path(request))
+    telemetry_session = _telemetry_session(request)
     try:
-        events = events_store.get_events_by_trace_id(conn, trace_id, channel=channel)
-        if not events:
+        spans = SpanRepository(telemetry_session).list_by_trace_id(trace_id, channel=channel)
+        if not spans:
             return JSONResponse(error(f"trace {trace_id!r} not found"), status_code=404)
-        return JSONResponse(success([dataclasses.asdict(e) for e in events], type_="array"))
+        return JSONResponse(success([_span_to_dict(s) for s in spans], type_="array"))
     finally:
-        conn.close()
+        telemetry_session.close()
 
 
 async def get_settings(request: Request) -> JSONResponse:

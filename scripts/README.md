@@ -9,6 +9,9 @@
 * `scripts/coverage` - Check that code coverage is complete.
 * `scripts/build` - Build source and wheel packages.
 
+`./nanobar` (repo root, not under `scripts/`) is a separate dev/reset/migrate wrapper for the
+`app/` demo app -- see the top-level `README.md`'s Development section.
+
 Styled after GitHub's ["Scripts to Rule Them All"](https://github.com/github/scripts-to-rule-them-all),
 mirroring `focusari_asgi`'s own scripts/ (no `install`/`docs`/`benchmark`/`sync-version` yet —
 no docs site or benchmark suite exists for this project yet).

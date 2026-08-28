@@ -1,5 +1,10 @@
 # NanobarAPI
 
+> **⚠️ Beta prototype — not for production use.** This is early, actively-changing exploratory
+> work (v0.1). APIs, schemas, and on-disk data formats break between commits without a migration
+> path (see "No users yet" precedent throughout `.focusari/`'s build plans). No users, no
+> guarantees, no support. Do not deploy this to serve real traffic or store data you care about.
+
 An opinionated ASGI API framework wrapping [Starlette](https://github.com/encode/starlette) —
 the same relationship FastAPI has to Starlette, but with its own architecture (stdlib
 `dataclasses` for validation instead of Pydantic, no `Depends()`-style dependency injection, and
@@ -29,12 +34,27 @@ $ scripts/lint    # auto-format and fix lint issues
 $ scripts/check   # lint/type-check only, no auto-fix
 ```
 
+Running the `app/` demo app itself (see "Regression testing with the nanobar dashboard" below
+for the full workflow) is a separate `./nanobar` wrapper at the repo root, not under `scripts/`
+-- it's specific to this repo's own demo app, not a lint/test/build step:
+
+```shell
+$ ./nanobar dev              # run the demo app (uv run nanobar dev server.py --port 8000)
+$ ./nanobar reset            # delete every local db under app/ and rebuild schemas fresh --
+                              # this project has no migration system, so this is the real fix
+                              # for schema drift (e.g. a "no such column" error)
+$ ./nanobar migrate          # create any missing tables on an existing db; cannot alter one
+                              # that already exists -- see `./nanobar migrate`'s own warning
+```
+
 ## File structure
 
 ```
 nanobar_api/                  # repo root
 ├── nanobar_api/                # the installed framework package (pip-distributable)
-│   ├── bricks/                   # RegressionBrick schema/store/generate/binding/replay/verdict
+│   ├── bricks/                   # RegressionBrick schema/store/generate/binding/verdict
+│   ├── regression_brick/          # RegressionBrick ORM model + analysis service (replay/verdict
+│   │                                 dispatch, folded together) + framework replay routes
 │   ├── eventbus/                  # durable SQLite-backed pub/sub (events.db)
 │   ├── middleware/                 # trace + snapshot capture middleware
 │   ├── capture/                     # capture policy -- what gets redacted vs. allow-listed
@@ -63,7 +83,8 @@ nanobar_api/                  # repo root
 ├── examples/                    # standalone scripts (seed traffic, generate bricks from a
 │   │                               # terminal) -- not part of the framework or the app itself
 │   └── ...
-├── server.py                    # `nanobar dev`/`uvicorn` entrypoint for app/
+├── server.py                    # `nanobar dev`/`uvicorn` entrypoint for app/ -- also what
+│                                  # regression-brick replay dispatches back into, in-process
 ├── tests/
 └── scripts/                     # test/lint/check/coverage/build
 ```
@@ -89,14 +110,42 @@ from.
   (`match_method`: `exact`/`regex`/`fuzzy`/`trace`/`manual`, plus a `confidence`) — a brick's
   association with a class is itself evidenced, not assumed.
 
+**One Nanobar, many RegressionBricks** — a class and its members:
+
+```
+┌───────────────────────────────────────────────────┐
+│ Nanobar   nb-a1b2c3                               │
+│                                                   │
+│ identity: (nanobar_type, monitor_target)          │
+│   nanobar_type   = "controller-request-response"  │
+│   monitor_target = "POST /orders"   (a route ref) │
+│                                                   │
+│ "a class of tests, not an individual scenario"    │
+└───────────────────────────────────────────────────┘
+        │
+        │  nanobar_regression_bricks
+        │  (match_method: exact/regex/fuzzy/trace/manual, + confidence)
+        │
+        ├──▶ RegressionBrick rb-001   regression_scenario_type: success (201)
+        │      content_hash: sha256:9f2a…   brick_version: 1
+        │
+        ├──▶ RegressionBrick rb-002   regression_scenario_type: invalid_input (400)
+        │      content_hash: sha256:71cd…   brick_version: 1
+        │
+        └──▶ RegressionBrick rb-003   regression_scenario_type: server_error (500)
+               content_hash: sha256:0e88…   brick_version: 2
+               forked_from_regression_brick_id: rb-003-v1  (new evidence, old one kept)
+```
+
 **How a brick connects back to a real trace/span**, concretely, end to end:
 
 1. A request flows through the app. `EventBusTraceMiddleware` (for the HTTP boundary) or
    `@NanobarTelemetry.span(...)`/`.trace(...)` (for arbitrary code) gives it a real OTel-style
    span with a `trace_id`/`span_id`.
 2. A boundary worth capturing as evidence tags that span with `NanobarProps(type=...)` —
-   `NanobarController.handle()`, `NanobarService.__call__()`, `NanobarValidatorGate.__call__()`,
-   and `NanobarORMWrapper`'s DB-boundary hook all do this automatically via `capture_layer()`.
+   `NanobarAPIController.handle()`, `NanobarAPIService.__call__()`,
+   `NanobarAPIValidatorGate.__call__()`, and `NanobarORMWrapper`'s DB-boundary hook all do this
+   automatically via `capture_layer()`.
    Tagging doesn't write a database row synchronously — it just puts a request/response payload
    onto the eventbus's `"snapshot"` channel, carrying that span's `trace_id`/`span_id` along
    with it.
@@ -115,28 +164,106 @@ a brick, you can always get back to the exact trace/span evidence it came from; 
 you can see every brick — and thus every trace — that's ever been evidence for that class of
 test.
 
+**The full flow, capture through replay verdict:**
+
+```
+┌─────────────────────────────┐
+│ a request (or domain event) │
+│ flows through the app       │
+└─────────────────────────────┘
+                │  a capture-worthy boundary tags the span
+                │  (capture_layer() / SnapshotMiddleware)
+                ▼
+┌──────────────────────────┐
+│ "snapshot" channel event │
+│ (EventQueueRepository)   │
+└──────────────────────────┘
+                │  TelemetryDrainWorker drains it into
+                │  Span/Trace rows (nanobar_api_telemetry.db)
+                ▼
+┌──────────────────────────────────┐
+│ generate_bricks()                │
+│ (nanobar_api/bricks/generate.py) │
+└──────────────────────────────────┘
+                │  explicit batch step, content-hash deduped --
+                │  NOT continuous re-inference (the "oracle problem")
+                ▼
+┌──────────────────────────────────────┐
+│ RegressionBrick  (frozen, immutable) │
+│ regression_bricks.db                 │
+└──────────────────────────────────────┘
+                │  self-contained: entry_point, app_box, nanobar_type
+                │  all stamped at creation -- zero queries at replay time
+                ▼
+┌───────────────────────────────┐
+│ bind_new_bricks_to_nanobars() │
+└───────────────────────────────┘
+                │  creates/reuses the Nanobar row + binding
+                ▼
+┌──────────────────────────────────────────┐
+│ bound to a Nanobar                       │
+│ (see the Nanobar + bricks diagram above) │
+└──────────────────────────────────────────┘
+
+     ── later, on demand: the dashboard's "Run" tab, or an IntegrationTestWorker sweep ──
+
+┌───────────────────────────────────────────────────────┐
+│ RegressionBrick (the same frozen, self-contained row) │
+└───────────────────────────────────────────────────────┘
+                │  brick.entry_point / brick.nanobar_type say
+                │  WHERE and HOW to replay it -- no lookup needed
+                ▼
+┌────────────────────────────────────────────────┐
+│ regression_brick_analysis_service.py   ("ACT") │
+└────────────────────────────────────────────────┘
+                │  dispatch by nanobar_type:
+                │   - HTTP-shaped         -> a real httpx2 request
+                │   - event-to-subscriber -> trigger-event + poll for
+                │                            the resulting span
+                ▼
+┌──────────────────────────────────────────────────┐
+│ this same running app, in-process                │
+│ (nanobar-mode: shadow header routes blog writes  │
+│ to a disposable replica -- no second process)    │
+└──────────────────────────────────────────────────┘
+                │  replayed_response
+                ▼
+┌────────────────────────────────────────────────────────┐
+│ evaluate_verdict()   ("ASSERT")                        │
+│ "run it, diff it, pass or show the diff. that is all." │
+└────────────────────────────────────────────────────────┘
+                │
+      ┌─────────┴──────────┐
+      ▼                    ▼
+┌──────┐        ┌───────────────┐
+│ PASS │        │ show the diff │
+└──────┘        └───────────────┘
+```
+
 ## Building an app
 
 Every mutating route follows one pipeline, and every layer is a base class you subclass:
 
 ```
-route -> NanobarValidatorGate -> NanobarController (orchestrates services) -> NanobarService(s)
-       -> NanobarRepository / models
+route -> NanobarAPIValidatorGate -> NanobarAPIController (orchestrates services) -> NanobarAPIService(s)
+       -> NanobarAPIRepository / models
 ```
 
-- **`NanobarValidatorGate`** (`nanobar_api/validator_gate.py`) — set a `controller_cls` class
-  attribute, implement `validate(request) -> T` (raise `ValidationError`, or return a parsed
-  dataclass via `nanobar_api.validation.parse`). Invalid input never reaches a controller.
-- **`NanobarController`** (`nanobar_api/controllers.py`) — implement `load_required_services()`
-  (build the services this request needs from ambient app state), `run_etl_workflow(validated)`
-  (call the service(s), return the result), and `build_response(result)` (shape the HTTP
-  response). A controller may orchestrate more than one service.
-- **`NanobarService`** (`nanobar_api/services.py`) — implement `handle(request) ->
-  ServiceResult` (`{status: "success"|"error"|"timeout", result: {type, data, msg_summary}}`).
-  **Services never call other services or controllers** — cross-service coordination belongs in
-  the controller.
-- **`NanobarRepository`** (`nanobar_api/repositories.py`) — a thin SQLAlchemy `Session` wrapper
-  with optional caching; owns persistence, not business logic.
+- **`NanobarAPIValidatorGate`** (`nanobar_api/framework/nanobar_api_validator_gate.py`) — set a
+  `controller_cls` class attribute, implement `validate(request) -> T` (raise `ValidationError`,
+  or return a parsed dataclass via `nanobar_api.validation.parse`). Invalid input never reaches
+  a controller.
+- **`NanobarAPIController`** (`nanobar_api/framework/nanobar_api_controller.py`) — implement
+  `load_required_services()` (build the services this request needs from ambient app state),
+  `run_etl_workflow(validated)` (call the service(s), return the result), and
+  `build_response(result)` (shape the HTTP response). A controller may orchestrate more than one
+  service.
+- **`NanobarAPIService`** (`nanobar_api/framework/nanobar_api_service.py`) — implement
+  `handle(request) -> ServiceResult` (`{status: "success"|"error"|"timeout", result: {type,
+  data, msg_summary}}`). **Services never call other services or controllers** —
+  cross-service coordination belongs in the controller.
+- **`NanobarAPIRepository`** (`nanobar_api/framework/nanobar_api_repository.py`) — a thin
+  SQLAlchemy `Session` wrapper with optional caching; owns persistence, not business logic.
 
 Every layer's call is automatically captured (see "Core concepts" above) — you don't instrument
 anything yourself to get regression evidence; building on these base classes is what wires it
@@ -167,19 +294,26 @@ Then open `http://127.0.0.1:8001/admin/nanobar/login` (seeded credentials
    taxonomy entry yet shows as "needs classification" rather than silently passing).
 4. **Triage** (`/admin/nanobar/triage`) — a kanban board for reviewing new bricks
    (`new` → `reviewed`/`flagged`/`promoted`).
-5. **Replay** — a brick's detail page has a **Run** tab: hermetically replays the brick's
-   captured request against a shadow app instance (real route/validation/controller/service
-   code, but writes redirected away from live data via
-   `nanobar_api.bricks.shadow_profile.ShadowPersistenceProfile` — the shadow target is
-   configurable, including a genuine remote database, via `connection_secret_ref`-style env
-   vars) and produces a **Verdict**: does the replayed response still match what was originally
-   captured? This *is* the regression check — "does this endpoint still behave the way this
-   evidence says it should," re-run on demand against current code.
+5. **Replay** — a brick's detail page has a **Run** tab: replays the brick's captured
+   request/event back against **this same running app**, in-process (no separate server/port to
+   run) — real route/validation/controller/service code, but blog-domain writes redirected away
+   from live data by a `nanobar-mode: shadow` header (`nanobar_api.shadow`) that routes them onto
+   a disposable replica instead, configurable including a genuine remote database via
+   `nanobar_api.bricks.shadow_profile.ShadowPersistenceProfile`'s `connection_secret_ref`-style
+   env vars (`NANOBAR_BLOG_SHADOW_DB`). Produces a **Verdict**: does the replayed response still
+   match what was originally captured? This *is* the regression check — "does this endpoint
+   still behave the way this evidence says it should," re-run on demand against current code.
 6. **Traces** (`/admin/nanobar/traces`) — browse raw trace/span evidence directly, independent
    of whether it's been turned into a brick yet.
 
 ## Status
 
-Beta v0.1, early. See `.focusari/complete/archive/nanobarapi-architecture-rules.md` for the
-full architecture rules, `.focusari/complete/adr/` for design ADRs (eventbus, scaling, data
-retention, data privacy, Kafka integration), and `.focusari/` itself for active build plans.
+**Beta v0.1, early — a prototype, not production software.** No stability guarantees on the
+API, the on-disk SQLite schemas, or the shadow-deployment/replay mechanisms — any of it can
+change or break between commits. There are no real users yet, so migrations for old data are
+deliberately skipped rather than built (see recent entries in `.focusari/` for concrete
+examples) — don't point this at data or traffic you need to keep.
+
+See `.focusari/complete/archive/nanobarapi-architecture-rules.md` for the full architecture
+rules, `.focusari/complete/adr/` for design ADRs (eventbus, scaling, data retention, data
+privacy, Kafka integration), and `.focusari/` itself for active build plans.

@@ -1,6 +1,6 @@
-"""`NanobarService` — replaces the empty `class Service: pass` stub in place, no back-compat
+"""`NanobarAPIService` — replaces the empty `class Service: pass` stub in place, no back-compat
 shim (nothing in the codebase constructed the old stub — confirmed via grep, same as
-`NanobarController`'s own rename).
+`NanobarAPIController`'s own rename).
 
 Per `.focusari/nanobar_ServiceDomain_abstract_class_buildplan-with-tasks.md` §1: the
 controller-to-service call boundary, producing the `service-request-response` brick.
@@ -45,11 +45,11 @@ class ServiceResult:
     source_info: list[SourceInfoEntry] = field(default_factory=list)
 
 
-class NanobarService(ABC):
+class NanobarAPIService(ABC):
     """`__init__` takes only `telemetry`, not a separate `repository` too — a deliberate
     deviation from the source spec's `__init__(self, telemetry, repository)`: `NanobarTelemetry`
-    already carries its own `.repository`, and `NanobarValidatorGate`/`NanobarController` (this
-    codebase's other two capture-producing base classes) already establish the "derive the
+    already carries its own `.repository`, and `NanobarAPIValidatorGate`/`NanobarAPIController`
+    (this codebase's other two capture-producing base classes) already establish the "derive the
     repository from telemetry" convention. Taking a second, independent `repository` param would
     invite the two to silently disagree.
     """
@@ -66,7 +66,7 @@ class NanobarService(ABC):
         optional (not every service call happens behind an HTTP route — a worker or event
         subscriber calling a service has no route key at all) — passed through to
         `capture_layer()` for `nanobar_api.bricks.binding` to use when it is available, same
-        convention `NanobarValidatorGate`/`NanobarController` already established.
+        convention `NanobarAPIValidatorGate`/`NanobarAPIController` already established.
         """
         with self.telemetry.span("service", nanobar=NanobarProps(type="service-request-response")):
             result = self.handle(request)

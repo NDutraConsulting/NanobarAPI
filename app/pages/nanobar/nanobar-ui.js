@@ -27,6 +27,7 @@ const editLabelEl = document.getElementById("edit-label");
 const editScenarioDescriptionEl = document.getElementById("edit-scenario-description");
 const editComponentSourceEl = document.getElementById("edit-component-source");
 const editDomainEl = document.getElementById("edit-domain");
+const editAppBoxEl = document.getElementById("edit-app-box");
 const editCriticalityEl = document.getElementById("edit-criticality");
 const editSaveBtnEl = document.getElementById("edit-save-btn");
 const editErrorEl = document.getElementById("edit-error");
@@ -125,6 +126,7 @@ export function renderSummary(nanobarId, nanobar) {
   const fields = [
     ["Type", nanobar.nanobar_type],
     ["Domain", nanobar.domain],
+    ["AppBox", nanobar.app_box],
     ["System version", nanobar.system_version],
     ["Regression weight", nanobar.regression_weight],
     ["Scenario frequency", nanobar.endpoint_scenario_frequency],
@@ -168,6 +170,7 @@ function populateEditForm(nanobar) {
   editScenarioDescriptionEl.value = nanobar.scenario_description || "";
   editComponentSourceEl.value = nanobar.component_source_description || "";
   editDomainEl.value = nanobar.domain || "";
+  editAppBoxEl.value = nanobar.app_box || "";
   editCriticalityEl.value = nanobar.criticality ?? 0.5;
 }
 
@@ -180,6 +183,7 @@ export function readEditFormFields() {
     scenario_description: editScenarioDescriptionEl.value,
     component_source_description: editComponentSourceEl.value,
     domain: editDomainEl.value,
+    app_box: editAppBoxEl.value,
   };
   if (editCriticalityEl.value !== "") {
     fields.criticality = Number(editCriticalityEl.value);
@@ -590,6 +594,7 @@ export function resetRunTab() {
 
 const runBtnEl = document.getElementById("run-btn");
 const refreshBtnEl = document.getElementById("refresh-btn");
+const runProgressEl = document.getElementById("run-progress");
 const runStatusEl = document.getElementById("run-status");
 const runVerdictEl = document.getElementById("run-verdict");
 const runSpansWrapEl = document.getElementById("run-spans-wrap");
@@ -608,6 +613,13 @@ export function setRefreshBusy(isBusy) {
   refreshBtnEl.disabled = isBusy;
 }
 
+/** Shows/hides the indeterminate loading bar -- there's no real progress fraction to report (a
+ * replay's own duration and the drain-worker delay while polling for its spans are both
+ * open-ended), just "something is happening, please wait." */
+export function setRunProgressVisible(isVisible) {
+  runProgressEl.hidden = !isVisible;
+}
+
 export function showRunStatus(message) {
   runStatusEl.hidden = false;
   runStatusEl.className = "run-status";
@@ -620,16 +632,12 @@ export function showRunError(message) {
   runStatusEl.textContent = message;
 }
 
-const VERDICT_LAYER_LABELS = {
-  status_layer: "Status",
-  schema_layer: "Schema",
-  pinned_field_layer: "Pinned fields",
-};
-
 /**
- * Renders a `Verdict` object (`{overall_passed, status_layer, schema_layer,
- * pinned_field_layer}`, each `*_layer` a `{passed, detail}`) as a pass/fail summary, and
- * enables the Refresh button now that there's a trace to watch.
+ * Renders a `Verdict` object (`{overall_passed, diffs}` -- `nanobar_api/bricks/verdict.py`'s
+ * current, simplified shape: "run it, then diff it. If they match, show a pass. If they don't,
+ * show the diff. That is all." -- one flat list of human-readable diff lines, no per-layer
+ * structure) as a pass/fail summary plus, on failure, the actual diffs, and enables the Refresh
+ * button now that there's a trace to watch.
  */
 export function renderVerdict(verdict) {
   runStatusEl.hidden = true;
@@ -639,25 +647,74 @@ export function renderVerdict(verdict) {
 
   const overall = document.createElement("p");
   overall.className = "run-verdict-overall";
-  overall.textContent = verdict.overall_passed ? "PASS — replay matches the original capture." : "FAIL — replay differs from the original capture.";
+  overall.textContent = verdict.overall_passed
+    ? "PASS — replay matches the original capture."
+    : "FAIL — replay differs from the original capture.";
   runVerdictEl.appendChild(overall);
 
-  for (const [key, label] of Object.entries(VERDICT_LAYER_LABELS)) {
-    const layer = verdict[key];
-    if (!layer) continue;
-    const row = document.createElement("p");
-    row.className = `run-verdict-layer ${layer.passed ? "run-verdict-layer-pass" : "run-verdict-layer-fail"}`;
-    row.textContent = `${label}: ${layer.passed ? "pass" : "fail"} — ${layer.detail}`;
-    runVerdictEl.appendChild(row);
+  if (verdict.diffs && verdict.diffs.length > 0) {
+    const list = document.createElement("ul");
+    list.className = "run-verdict-diffs";
+    for (const diff of verdict.diffs) {
+      const item = document.createElement("li");
+      item.className = "run-verdict-diff";
+      item.textContent = diff;
+      list.appendChild(item);
+    }
+    runVerdictEl.appendChild(list);
   }
 
   refreshBtnEl.disabled = false;
 }
 
+/** A replay's trace carries two different event shapes per boundary on the same channel set --
+ * a "trace"-channel event (`{name, status, code.function.name, ...}`, from `NanobarTelemetry`/
+ * `EventBusTraceMiddleware`) and a "snapshot"-channel event (`{request, response, content_hash,
+ * nanobar_type, ...}`, from `capture_layer()`) -- and only the first carries a `name` field. A
+ * snapshot event has no name of its own but *does* carry the actual request/response content,
+ * so falling back to a literal "(unnamed span)" for it was actively hiding the more useful of
+ * the two shapes behind the least informative label. Derives something real from whatever the
+ * payload actually has instead: the request's own method+path (a raw `SnapshotMiddleware`
+ * capture), a truncated SQL statement (an `orm-request-response` capture), or -- if neither
+ * shape matches -- the nanobar_type itself (already shown as a badge, but still better than
+ * nothing in the name slot). */
+function summarizeSpanName(payload) {
+  if (payload.name) return payload.name;
+
+  const request = payload.request;
+  if (request && typeof request === "object") {
+    if (typeof request.method === "string" && typeof request.path === "string") {
+      return `${request.method} ${request.path}`;
+    }
+    if (typeof request.statement === "string") {
+      const statement = request.statement.trim().replace(/\s+/g, " ");
+      return statement.length > 70 ? `${statement.slice(0, 70)}…` : statement;
+    }
+  }
+
+  return payload.nanobar_type ? `${payload.nanobar_type} capture` : "(unnamed span)";
+}
+
+/** Same reasoning as `summarizeSpanName()` -- a snapshot-channel event has no top-level
+ * `status_code`/`status` field (those only exist on trace-channel events), so this used to
+ * always render "—" for exactly the events most worth knowing the outcome of. Falls back to
+ * `payload.error` (every event shape carries this) when neither of the trace-channel fields is
+ * present. */
+function summarizeSpanStatus(payload) {
+  if (payload.status_code != null) return String(payload.status_code);
+  if (payload.status) return payload.status;
+  if (payload.error === true) return "error";
+  if (payload.error === false) return "ok";
+  return "—";
+}
+
 /** Renders the replay's own trace's spans (name, nanobar_type badge if tagged, status/error) as
- * a flat, read-only list — a lighter-weight rendering than the full trace-detail page's
- * master-detail view, since this is just "what happened during this one replay," not a general
- * trace browser. */
+ * a flat, read-only, expandable list — a lighter-weight rendering than the full trace-detail
+ * page's master-detail view, since this is just "what happened during this one replay," not a
+ * general trace browser. Each row is a native `<details>` disclosure; expanding one reveals its
+ * full raw payload (the same `.json-block` rendering the Detail tab's own Request/Response
+ * panels already use) -- the actual request/response content, SQL statement, or code-location
+ * attributes behind whatever `summarizeSpanName()`/`summarizeSpanStatus()` show by default. */
 export function renderRunSpans(events) {
   runSpansListEl.textContent = "";
 
@@ -671,7 +728,7 @@ export function renderRunSpans(events) {
     const payload = event.payload || {};
     const fragment = runSpanRowTemplate.content.cloneNode(true);
     const row = fragment.querySelector(".run-span-row");
-    fragment.querySelector(".run-span-name").textContent = payload.name || "(unnamed span)";
+    fragment.querySelector(".run-span-name").textContent = summarizeSpanName(payload);
 
     const badgeEl = fragment.querySelector(".run-span-nanobar-type");
     if (payload.nanobar_type) {
@@ -679,8 +736,8 @@ export function renderRunSpans(events) {
       badgeEl.hidden = false;
     }
 
-    const statusEl = fragment.querySelector(".run-span-status");
-    statusEl.textContent = payload.status_code != null ? String(payload.status_code) : payload.status || "—";
+    fragment.querySelector(".run-span-status").textContent = summarizeSpanStatus(payload);
+    fragment.querySelector(".run-span-payload").textContent = JSON.stringify(payload, null, 2);
 
     if (payload.error) {
       row.classList.add("run-span-row-error");

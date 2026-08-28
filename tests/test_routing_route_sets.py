@@ -7,18 +7,18 @@ from starlette.requests import Request
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.routing import (
     NanobarRouteRule,
     NanobarRouteSet,
     RestRouteAdapter,
     _parse_rest_route_key,
 )
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 
-class _FakeGate(NanobarValidatorGate):
+class _FakeGate(NanobarAPIValidatorGate):
     """A routing-adapter test double — overrides `__call__` directly (bypassing the real,
-    telemetry/controller-backed dispatch `NanobarValidatorGate` now implements) so these tests
+    telemetry/controller-backed dispatch `NanobarAPIValidatorGate` now implements) so these tests
     stay scoped to `Mount`/middleware wiring, not gate/controller lifecycle (covered instead by
     `test_validator_gate.py`/`test_controllers.py`)."""
 

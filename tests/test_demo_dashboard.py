@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
+from sqlalchemy.orm import Session
 from starlette.testclient import TestClient
 
 from app.admin.app.auth_db import (
@@ -23,6 +25,11 @@ from app.admin.nanobar.events_db import (
     DEFAULT_DB_PATH as EVENTS_DEFAULT_DB_PATH,
     resolve_db_path as resolve_events_db_path,
 )
+from app.admin.nanobar.telemetry_db import (
+    DB_PATH_ENV_VAR as TELEMETRY_DB_PATH_ENV_VAR,
+    DEFAULT_DB_PATH as TELEMETRY_DEFAULT_DB_PATH,
+    resolve_db_path as resolve_telemetry_db_path,
+)
 from app.core.config import (
     ROUTE_MANIFEST_DEFAULT_PATH,
     ROUTE_MANIFEST_PATH_ENV_VAR,
@@ -30,11 +37,44 @@ from app.core.config import (
 )
 from app.main import build_app
 from nanobar_api.admin_auth import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
-from nanobar_api.bricks.schema import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick
-from nanobar_api.bricks.store import bind_brick_to_nanobar, connect, insert_brick, insert_nanobar, set_review_status
 from nanobar_api.eventbus.events import Event
-from nanobar_api.eventbus.store import connect as events_connect, insert_events, register_worker
+from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
+from nanobar_api.eventbus.store import connect as events_connect, register_worker
+from nanobar_api.nanobar.model import MonitorTargetRef, Nanobar, NanobarBrickBinding
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.persistence import build_session_factory
+from nanobar_api.regression_brick.model import RegressionBrick
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
+from nanobar_api.telemetry.model import Span
+from nanobar_api.telemetry.persistence import build_session_factory as build_telemetry_session_factory
+from nanobar_api.telemetry.span_repository import SpanRepository
+from nanobar_api.telemetry.trace_repository import TraceRepository
 from nanobar_api.worker_utils import WorkerLogEntry, log_worker_failure
+
+
+def _session(db_path: str) -> Session:
+    """Opens a fresh `Session` against the regression-bricks db at `db_path` -- the fixture-setup
+    equivalent of what `conn = connect(db_path)` (the old raw-`sqlite3` layer) used to do. A
+    throwaway `EventQueueRepository` is enough here since fixture-setup ORM writes have nowhere
+    real to be captured to (mirrors every other one-off script/test in this codebase that builds
+    its own session factory just for this)."""
+    return build_session_factory(db_path, repository=EventQueueRepository([ChannelConfig(name="snapshot")]))()
+
+
+def insert_nanobar(session: Session, nanobar: Nanobar) -> Nanobar:
+    return NanobarRepository(session).create(nanobar)
+
+
+def insert_brick(session: Session, brick: RegressionBrick) -> RegressionBrick:
+    return RegressionBrickRepository(session).create(brick)
+
+
+def bind_brick_to_nanobar(session: Session, binding: NanobarBrickBinding) -> None:
+    NanobarRepository(session).bind_brick(binding)
+
+
+def set_review_status(session: Session, regression_brick_id: str, status: str, updated_by: str) -> None:
+    RegressionBrickRepository(session).set_review_status(regression_brick_id, status, updated_by)
 
 
 def _make_brick(
@@ -66,6 +106,7 @@ def _make_nanobar(
     system_name: str = "checkout-service",
     nanobar_type: str = "api-response",
     domain: str | None = None,
+    app_box: str | None = None,
 ) -> Nanobar:
     return Nanobar(
         nanobar_id=nanobar_id,
@@ -79,6 +120,7 @@ def _make_nanobar(
         endpoint_scenario_frequency={"state": "unmeasured"},
         created_by="test",
         domain=domain,
+        app_box=app_box,
         monitor_target_refs=(
             target_refs if target_refs is not None else [MonitorTargetRef("openapi_operation", "checkout")]
         ),
@@ -86,10 +128,10 @@ def _make_nanobar(
 
 
 def _bind(db_path: str, nanobar_id: str, brick_id: str) -> None:
-    conn = connect(db_path)
+    session = _session(db_path)
     try:
         bind_brick_to_nanobar(
-            conn,
+            session,
             NanobarBrickBinding(
                 nanobar_id=nanobar_id,
                 regression_brick_id=brick_id,
@@ -99,7 +141,7 @@ def _bind(db_path: str, nanobar_id: str, brick_id: str) -> None:
             ),
         )
     finally:
-        conn.close()
+        session.close()
 
 
 def _make_span_event(
@@ -135,6 +177,28 @@ def _make_span_event(
         trace_id=trace_id,
         span_id=span_id,
     )
+
+
+def _ingest_events(telemetry_session: Session, events: list[Event]) -> None:
+    """Test-only stand-in for what `TelemetryDrainWorker` does for real in production -- writes
+    each `Event` straight into `Trace`/`Span` rows via the real repositories."""
+    trace_repository = TraceRepository(telemetry_session)
+    span_repository = SpanRepository(telemetry_session)
+    for event in events:
+        assert event.trace_id is not None
+        assert event.span_id is not None
+        trace_repository.get_or_create(event.trace_id, entry_point=event.payload.get("name") or event.channel)
+        span_repository.create(
+            Span(
+                event_id=event.event_id,
+                span_id=event.span_id,
+                trace_id=event.trace_id,
+                channel=event.channel,
+                recorded_at_ns=event.recorded_at_ns,
+                monotonic_ns=event.monotonic_ns,
+                payload_json=event.payload,
+            )
+        )
 
 
 NANOBAR_LOGIN_PATH = "/admin/nanobar/login"
@@ -174,6 +238,30 @@ def _authenticate(
     return csrf_token
 
 
+def _wait_for_controller_nanobar(test_client: TestClient) -> dict[str, Any]:
+    """Repeatedly POSTs `/api/generate-bricks` until a `controller-request-response` nanobar
+    shows up, not just until any batch reports `new_bricks > 0` once.
+
+    `capture_layer()`'s events reach `events.db` via a background `EventThread` that flushes in
+    batches on a timer (see `eventbus/event_thread.py`) -- not synchronously with the mutating
+    POST that produced them -- and a single HTTP request can produce several distinct captures
+    (validator/controller/service/orm layers) that don't necessarily all flush together. A retry
+    loop that stops at the first `new_bricks > 0` only proves *some* capture landed, not the
+    specific one this test needs next -- confirmed live as a real, pre-existing race (not
+    reliable-until-now by accident): generating bricks is itself now real
+    `NanobarAPIService`-routed work (`TraceScannerService`), so it produces its own captures too,
+    changing the timing enough to make the race miss more often than it used to.
+    """
+    for _ in range(50):
+        test_client.post("/admin/nanobar/api/generate-bricks")
+        nanobars = test_client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
+        controller_nanobar = next((n for n in nanobars if n["nanobar_type"] == "controller-request-response"), None)
+        if controller_nanobar is not None:
+            return controller_nanobar  # type: ignore[no-any-return]
+        time.sleep(0.05)
+    pytest.fail("no controller-request-response nanobar appeared -- captured events never reached events.db")
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     return str(tmp_path / "regression_bricks.db")
@@ -182,6 +270,11 @@ def db_path(tmp_path: Path) -> str:
 @pytest.fixture
 def events_db_path(tmp_path: Path) -> str:
     return str(tmp_path / "events.db")
+
+
+@pytest.fixture
+def telemetry_db_path(tmp_path: Path) -> str:
+    return str(tmp_path / "telemetry.db")
 
 
 @pytest.fixture
@@ -208,6 +301,7 @@ def route_manifest_path(tmp_path: Path) -> str:
 def client(
     db_path: str,
     events_db_path: str,
+    telemetry_db_path: str,
     app_admin_db_path: str,
     nanobar_admin_db_path: str,
     nanobar_type_system_db_path: str,
@@ -217,6 +311,7 @@ def client(
         build_app(
             db_path=db_path,
             events_db_path=events_db_path,
+            telemetry_db_path=telemetry_db_path,
             app_admin_db_path=app_admin_db_path,
             nanobar_admin_db_path=nanobar_admin_db_path,
             nanobar_type_system_db_path=nanobar_type_system_db_path,
@@ -238,12 +333,13 @@ def client(
 
 
 def _unauthenticated_client(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
+    db_path: str, events_db_path: str, telemetry_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
 ) -> TestClient:
     return TestClient(
         build_app(
             db_path=db_path,
             events_db_path=events_db_path,
+            telemetry_db_path=telemetry_db_path,
             app_admin_db_path=app_admin_db_path,
             nanobar_admin_db_path=nanobar_admin_db_path,
         ),
@@ -262,13 +358,16 @@ def _unauthenticated_client(
 def test_unauthenticated_dashboard_request_redirects_to_that_surfaces_own_login(
     db_path: str,
     events_db_path: str,
+    telemetry_db_path: str,
     app_admin_db_path: str,
     nanobar_admin_db_path: str,
     login_path: str,
     dashboard_path: str,
     api_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     response = client.get(dashboard_path)
 
@@ -287,13 +386,16 @@ def test_unauthenticated_dashboard_request_redirects_to_that_surfaces_own_login(
 def test_unauthenticated_api_request_gets_401_envelope(
     db_path: str,
     events_db_path: str,
+    telemetry_db_path: str,
     app_admin_db_path: str,
     nanobar_admin_db_path: str,
     login_path: str,
     dashboard_path: str,
     api_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     response = client.get(api_path)
 
@@ -303,9 +405,16 @@ def test_unauthenticated_api_request_gets_401_envelope(
 
 @pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
 def test_login_get_serves_the_login_page_and_issues_cookies(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+    db_path: str,
+    events_db_path: str,
+    telemetry_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     response = client.get(login_path)
 
@@ -317,9 +426,16 @@ def test_login_get_serves_the_login_page_and_issues_cookies(
 
 @pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
 def test_login_post_without_a_prior_get_is_rejected(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+    db_path: str,
+    events_db_path: str,
+    telemetry_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     # No prior GET -> no session cookie, no CSRF cookie/header -- CSRFMiddleware rejects first.
     response = client.post(login_path, json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD})
@@ -335,12 +451,15 @@ def test_login_post_without_a_prior_get_is_rejected(
 def test_login_post_with_wrong_password_is_rejected(
     db_path: str,
     events_db_path: str,
+    telemetry_db_path: str,
     app_admin_db_path: str,
     nanobar_admin_db_path: str,
     login_path: str,
     api_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
     get_response = client.get(login_path)
     csrf_token = get_response.cookies["nanobar_csrftoken"]
 
@@ -359,9 +478,16 @@ def test_login_post_with_wrong_password_is_rejected(
 
 @pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
 def test_login_post_with_unknown_username_is_rejected(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+    db_path: str,
+    events_db_path: str,
+    telemetry_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
     get_response = client.get(login_path)
     csrf_token = get_response.cookies["nanobar_csrftoken"]
 
@@ -376,9 +502,16 @@ def test_login_post_with_unknown_username_is_rejected(
 
 @pytest.mark.parametrize("login_path", [NANOBAR_LOGIN_PATH, APP_LOGIN_PATH], ids=["nanobar", "app"])
 def test_login_post_missing_password_field_is_rejected(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str, login_path: str
+    db_path: str,
+    events_db_path: str,
+    telemetry_db_path: str,
+    app_admin_db_path: str,
+    nanobar_admin_db_path: str,
+    login_path: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
     get_response = client.get(login_path)
     csrf_token = get_response.cookies["nanobar_csrftoken"]
 
@@ -400,13 +533,16 @@ def test_login_post_missing_password_field_is_rejected(
 def test_full_login_flow_grants_access_to_that_surfaces_own_gated_dashboard(
     db_path: str,
     events_db_path: str,
+    telemetry_db_path: str,
     app_admin_db_path: str,
     nanobar_admin_db_path: str,
     login_path: str,
     dashboard_path: str,
     redirect: str,
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     csrf_token = _authenticate(client, login_path=login_path)
     login_response = client.post(
@@ -423,9 +559,11 @@ def test_full_login_flow_grants_access_to_that_surfaces_own_gated_dashboard(
 
 
 def test_authenticating_one_admin_surface_never_authenticates_the_other(
-    db_path: str, events_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
+    db_path: str, events_db_path: str, telemetry_db_path: str, app_admin_db_path: str, nanobar_admin_db_path: str
 ) -> None:
-    client = _unauthenticated_client(db_path, events_db_path, app_admin_db_path, nanobar_admin_db_path)
+    client = _unauthenticated_client(
+        db_path, events_db_path, telemetry_db_path, app_admin_db_path, nanobar_admin_db_path
+    )
 
     _authenticate(client, login_path=NANOBAR_LOGIN_PATH)
 
@@ -454,10 +592,10 @@ def test_api_list_nanobars_empty(client: TestClient) -> None:
 
 
 def test_api_list_nanobars_returns_all(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
-    insert_nanobar(conn, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
+    insert_nanobar(session, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars")
 
@@ -468,10 +606,10 @@ def test_api_list_nanobars_returns_all(db_path: str, client: TestClient) -> None
 
 
 def test_api_list_nanobars_filters_by_target_type(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
-    insert_nanobar(conn, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
+    insert_nanobar(session, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars", params={"target_type": "service"})
 
@@ -480,11 +618,11 @@ def test_api_list_nanobars_filters_by_target_type(db_path: str, client: TestClie
 
 
 def test_api_list_nanobars_filters_by_domain(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-app", domain="admin/app"))
-    insert_nanobar(conn, _make_nanobar("nb-kanban", domain="boards"))
-    insert_nanobar(conn, _make_nanobar("nb-unmapped", domain=None))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-app", domain="admin/app"))
+    insert_nanobar(session, _make_nanobar("nb-kanban", domain="boards"))
+    insert_nanobar(session, _make_nanobar("nb-unmapped", domain=None))
+    session.close()
 
     app_only = client.get("/admin/nanobar/api/nanobars", params={"domain": "admin/app"}).json()["result"]["data"][
         "items"
@@ -497,13 +635,34 @@ def test_api_list_nanobars_filters_by_domain(db_path: str, client: TestClient) -
     assert [n["nanobar_id"] for n in unmapped_only] == ["nb-unmapped"]
 
 
+def test_api_list_nanobars_filters_by_app_box(db_path: str, client: TestClient) -> None:
+    # app_box's own filter, independent of domain -- same shape as
+    # test_api_list_nanobars_filters_by_domain above, proving the two are genuinely separate,
+    # independently-filterable fields (per .focusari/appbox-plan-with-tasks.md).
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-app", app_box="admin/app"))
+    insert_nanobar(session, _make_nanobar("nb-workers", app_box="workers"))
+    insert_nanobar(session, _make_nanobar("nb-unmapped", app_box=None))
+    session.close()
+
+    app_only = client.get("/admin/nanobar/api/nanobars", params={"app_box": "admin/app"}).json()["result"]["data"][
+        "items"
+    ]
+    unmapped_only = client.get("/admin/nanobar/api/nanobars", params={"app_box": "(unmapped)"}).json()["result"][
+        "data"
+    ]["items"]
+
+    assert [n["nanobar_id"] for n in app_only] == ["nb-app"]
+    assert [n["nanobar_id"] for n in unmapped_only] == ["nb-unmapped"]
+
+
 def test_api_list_nanobars_filters_by_nanobar_type(db_path: str, client: TestClient) -> None:
     # nanobar_type is what the dashboard list page actually groups/filters by -- see
     # app/pages/nanobars/nanobars-controller.js.
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="validator-request-response"))
-    insert_nanobar(conn, _make_nanobar("nb-2", nanobar_type="orm-request-response"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="validator-request-response"))
+    insert_nanobar(session, _make_nanobar("nb-2", nanobar_type="orm-request-response"))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars", params={"nanobar_type": "validator-request-response"})
 
@@ -512,10 +671,10 @@ def test_api_list_nanobars_filters_by_nanobar_type(db_path: str, client: TestCli
 
 
 def test_api_list_nanobars_searches_label(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
-    insert_nanobar(conn, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-route", [MonitorTargetRef("openapi_operation", "checkout")]))
+    insert_nanobar(session, _make_nanobar("nb-service", [MonitorTargetRef("service", "billing")]))
+    session.close()
     client.patch("/admin/nanobar/api/nanobars/nb-service", json={"label": "Billing service"})
 
     response = client.get("/admin/nanobar/api/nanobars", params={"q": "billing"})
@@ -525,10 +684,10 @@ def test_api_list_nanobars_searches_label(db_path: str, client: TestClient) -> N
 
 
 def test_api_list_nanobars_paginates(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
+    session = _session(db_path)
     for i in range(3):
-        insert_nanobar(conn, _make_nanobar(f"nb-{i}"))
-    conn.close()
+        insert_nanobar(session, _make_nanobar(f"nb-{i}"))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars", params={"page": 2, "page_size": 2})
 
@@ -547,39 +706,38 @@ def test_api_list_nanobars_invalid_page_is_rejected(client: TestClient) -> None:
 
 
 def test_api_generate_bricks_action_identifies_captured_snapshot_event_spans(
-    events_db_path: str, client: TestClient
+    telemetry_db_path: str, client: TestClient
 ) -> None:
     """Same shape `capture_layer()` writes onto the "snapshot" channel for a real controller-
-    layer call -- inserted directly, standing in for a real `/admin/app/*` request, so this
-    test doesn't need to drive the full blog domain just to prove the route identifies the
-    captured event-span in events.db and generates its brick in regression_bricks.db, the same
-    way `examples/generate_dashboard_bricks.py` does.
+    layer call -- inserted directly (standing in for what `TelemetryDrainWorker` would have
+    ingested from a real `/admin/app/*` request), so this test doesn't need to drive the full
+    blog domain just to prove the route identifies the captured span in
+    nanobar_api_telemetry.db and generates its brick in regression_bricks.db, the same way
+    `examples/generate_dashboard_bricks.py` does.
     """
-    conn = events_connect(events_db_path)
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(
-            conn,
-            [
-                Event(
-                    event_id="evt-capture-1",
-                    channel="snapshot",
-                    recorded_at_ns=1,
-                    monotonic_ns=1,
-                    payload={
-                        "request": {"title": "Hello"},
-                        "response": {"id": "post-1", "title": "Hello"},
-                        "content_hash": "deadbeef",
-                        "error": False,
-                        "nanobar_type": "controller-request-response",
-                        "route_key": "POST /admin/app/api/posts",
-                    },
-                    trace_id="tr-1",
-                    span_id="span-1",
-                )
-            ],
+        TraceRepository(telemetry_session).get_or_create("tr-1", entry_point="POST /admin/app/api/posts")
+        SpanRepository(telemetry_session).create(
+            Span(
+                event_id="evt-capture-1",
+                span_id="span-1",
+                trace_id="tr-1",
+                channel="snapshot",
+                recorded_at_ns=1,
+                monotonic_ns=1,
+                payload_json={
+                    "request": {"title": "Hello"},
+                    "response": {"id": "post-1", "title": "Hello"},
+                    "content_hash": "deadbeef",
+                    "error": False,
+                    "nanobar_type": "controller-request-response",
+                    "route_key": "POST /admin/app/api/posts",
+                },
+            )
         )
     finally:
-        conn.close()
+        telemetry_session.close()
 
     response = client.post("/admin/nanobar/api/generate-bricks")
 
@@ -594,9 +752,12 @@ def test_api_generate_bricks_action_identifies_captured_snapshot_event_spans(
     assert len(nanobars) == 1
     assert nanobars[0]["nanobar_type"] == "controller-request-response"
     # generate_bricks_action loads the route manifest and passes it through, so a
-    # newly-created nanobar for a real declared route is stamped with its domain immediately
-    # -- not left None until a later "Nanobar refresh" backfills it.
+    # newly-created nanobar for a real declared route is stamped with its domain/app_box
+    # immediately -- not left None until a later "Nanobar refresh" backfills it. app_box equals
+    # domain here since /admin/app/api/posts is a real Mounted route, not one of the two
+    # unmounted login routes app_box's own URL-prefix refinement exists for.
     assert nanobars[0]["domain"] == "admin/app"
+    assert nanobars[0]["app_box"] == "admin/app"
 
 
 def test_api_generate_bricks_action_is_a_safe_noop_when_nothing_to_process(client: TestClient) -> None:
@@ -622,6 +783,7 @@ def test_api_refresh_nanobars_action_creates_unclassified_placeholders_for_every
     assert data["routes_scanned"] == manifest_route_count
     assert data["nanobars_created"] == manifest_route_count
     assert data["domains_updated"] == 0
+    assert data["app_boxes_updated"] == 0
 
     nanobars = client.get(
         "/admin/nanobar/api/nanobars", params={"nanobar_type": "unclassified", "page_size": 200}
@@ -629,6 +791,20 @@ def test_api_refresh_nanobars_action_creates_unclassified_placeholders_for_every
     by_route_key = {n["monitor_target_refs"][0]["stable_name"]: n for n in nanobars}
     assert by_route_key["GET /admin/nanobar/dashboard"]["domain"] == "admin/nanobar"
     assert by_route_key["GET /admin/app/dashboard"]["domain"] == "admin/app"
+    assert by_route_key["GET /admin/nanobar/dashboard"]["app_box"] == "admin/nanobar"
+    assert by_route_key["GET /admin/app/dashboard"]["app_box"] == "admin/app"
+    # The two login routes aren't Mount-wrapped (see nanobar_refresh.py's own module docstring
+    # for why that isn't safely fixable), so their domain stays "" -- but app_box's own
+    # URL-prefix refinement still correctly classifies them, unlike the generic "api" fallback
+    # every other un-mounted route gets.
+    assert by_route_key["GET /admin/nanobar/login"]["domain"] == ""
+    assert by_route_key["GET /admin/nanobar/login"]["app_box"] == "admin/nanobar"
+    assert by_route_key["GET /admin/app/login"]["domain"] == ""
+    assert by_route_key["GET /admin/app/login"]["app_box"] == "admin/app"
+    # A genuinely un-mounted, non-admin route (the blog's own public root) falls back to the
+    # framework-level generic default instead.
+    assert by_route_key["GET /"]["domain"] == ""
+    assert by_route_key["GET /"]["app_box"] == "api"
 
 
 def test_api_refresh_nanobars_action_does_not_duplicate_on_a_second_call(client: TestClient) -> None:
@@ -640,22 +816,27 @@ def test_api_refresh_nanobars_action_does_not_duplicate_on_a_second_call(client:
 
 
 def test_api_refresh_nanobars_action_backfills_domain_on_an_existing_nanobar(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
+    session = _session(db_path)
     insert_nanobar(
-        conn,
+        session,
         _make_nanobar(
             "nb-1",
             [MonitorTargetRef(target_type="route", stable_name="GET /admin/nanobar/dashboard")],
             nanobar_type="validator-request-response",
         ),
     )
-    conn.close()
-    assert client.get("/admin/nanobar/api/nanobars/nb-1").json()["result"]["data"]["domain"] is None
+    session.close()
+    before = client.get("/admin/nanobar/api/nanobars/nb-1").json()["result"]["data"]
+    assert before["domain"] is None
+    assert before["app_box"] is None
 
     response = client.post("/admin/nanobar/api/refresh/nanobars")
 
     assert response.json()["result"]["data"]["domains_updated"] == 1
-    assert client.get("/admin/nanobar/api/nanobars/nb-1").json()["result"]["data"]["domain"] == "admin/nanobar"
+    assert response.json()["result"]["data"]["app_boxes_updated"] == 1
+    after = client.get("/admin/nanobar/api/nanobars/nb-1").json()["result"]["data"]
+    assert after["domain"] == "admin/nanobar"
+    assert after["app_box"] == "admin/nanobar"
 
 
 # ------------------------------------------------------------------------- refresh status ---
@@ -706,9 +887,9 @@ def test_api_refresh_api_routes_action_rewrites_the_manifest_and_records_status(
 
 
 def test_api_nanobar_detail_found_and_not_found(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     found = client.get("/admin/nanobar/api/nanobars/nb-1")
     missing = client.get("/admin/nanobar/api/nanobars/does-not-exist")
@@ -724,7 +905,8 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
     /admin/app/api/posts (real capture_layer() output), turn that into a real bound brick via
     the already-tested generate-bricks action, then Run it -- and confirm the replay produced a
     real verdict/trace_id *and* never touched the live app's own blog.db (only the sibling
-    blog_shadow.db).
+    blog_shadow.db), running entirely in-process against this same app (no separate shadow app/
+    client to build -- `build_app()`'s own default `replay_client` handles that now).
     """
     db_path = str(tmp_path / "regression_bricks.db")
     events_db_path = str(tmp_path / "events.db")
@@ -736,6 +918,7 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
     app = build_app(
         db_path=db_path,
         events_db_path=events_db_path,
+        telemetry_db_path=str(tmp_path / "telemetry.db"),
         app_admin_db_path=app_admin_db_path,
         nanobar_admin_db_path=nanobar_admin_db_path,
         blog_db_path=blog_db_path,
@@ -756,26 +939,16 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
         )
         assert created.status_code == 200
 
-        # capture_layer()'s events reach events.db via a background EventThread that flushes in
-        # batches on a timer (see eventbus/event_thread.py) -- not synchronously with the POST
-        # above -- so generate-bricks may need a couple of tries before anything's landed yet.
-        for _ in range(50):
-            generated = test_client.post("/admin/nanobar/api/generate-bricks")
-            if generated.json()["result"]["data"]["new_bricks"] > 0:
-                break
-            time.sleep(0.05)
-        else:
-            pytest.fail("captured events never reached events.db")
-
-        nanobars = test_client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
-        controller_nanobar = next(n for n in nanobars if n["nanobar_type"] == "controller-request-response")
+        controller_nanobar = _wait_for_controller_nanobar(test_client)
         bricks = test_client.get(f"/admin/nanobar/api/nanobars/{controller_nanobar['nanobar_id']}/bricks").json()[
             "result"
         ]["data"]
         brick = next(b for b in bricks if b["source"].get("route_key") == "POST /admin/app/api/posts")
 
-        assert not Path(shadow_blog_db_path).exists()
-
+        # build_app() above already built (and thus already touched) the shadow db file eagerly,
+        # at app-build time, alongside the live one -- not conjured fresh per replay. The
+        # isolation guarantee this test actually cares about -- the replay's own write lands in
+        # the shadow db, never the live one -- is proven below instead.
         response = test_client.post(f"/admin/nanobar/api/bricks/{brick['regression_brick_id']}/replay")
 
         assert response.status_code == 200
@@ -790,6 +963,81 @@ def test_api_replay_brick_action_end_to_end(tmp_path: Path) -> None:
         assert len(real_posts) == 1  # only the original create, not a second one from the replay
 
 
+def test_api_replay_brick_action_seeds_shadow_state_for_update_post(tmp_path: Path) -> None:
+    """Real, confirmed bug fixed via `app/admin/nanobar/replay_seeders.py`: replaying an
+    update-post brick targets a `post_id` that only exists in the *live* blog db -- the shadow
+    replica starts empty by design, so without seeding, this always 404s ("post '...' not
+    found") through no fault of the app's own code, even though the original capture was a real
+    200. `seed_for_replay()` reconstructs a placeholder row with the right id before dispatch;
+    `UpdatePostService.handle()`'s own request then overwrites the fields that actually matter.
+    """
+    db_path = str(tmp_path / "regression_bricks.db")
+    events_db_path = str(tmp_path / "events.db")
+    app_admin_db_path = str(tmp_path / "app_admin.db")
+    nanobar_admin_db_path = str(tmp_path / "nanobar_admin.db")
+    blog_db_path = str(tmp_path / "blog.db")
+
+    app = build_app(
+        db_path=db_path,
+        events_db_path=events_db_path,
+        telemetry_db_path=str(tmp_path / "telemetry.db"),
+        app_admin_db_path=app_admin_db_path,
+        nanobar_admin_db_path=nanobar_admin_db_path,
+        blog_db_path=blog_db_path,
+        route_manifest_path=str(tmp_path / "nanobar.api-routes.json"),
+    )
+    with TestClient(app) as test_client:
+        _authenticate(test_client, login_path=NANOBAR_LOGIN_PATH)
+        app_csrf_token = _authenticate(test_client, login_path=APP_LOGIN_PATH, set_default_header=False)
+
+        created = test_client.post(
+            "/admin/app/api/posts",
+            json={"title": "Hello", "body": "World"},
+            headers={"x-nanobar-csrf-token": app_csrf_token},
+        )
+        post_id = created.json()["result"]["data"]["id"]
+
+        updated = test_client.post(
+            f"/admin/app/api/posts/{post_id}",
+            json={"title": "Edited", "body": "edited body"},
+            headers={"x-nanobar-csrf-token": app_csrf_token},
+        )
+        assert updated.status_code == 200
+
+        update_route_key = "POST /admin/app/api/posts/{post_id}"
+        update_brick = None
+        for _ in range(50):
+            test_client.post("/admin/nanobar/api/generate-bricks")
+            nanobars = test_client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
+            for nanobar in nanobars:
+                if nanobar["nanobar_type"] != "controller-request-response":
+                    continue
+                bricks = test_client.get(f"/admin/nanobar/api/nanobars/{nanobar['nanobar_id']}/bricks").json()[
+                    "result"
+                ]["data"]
+                update_brick = next((b for b in bricks if b["source"].get("route_key") == update_route_key), None)
+                if update_brick:
+                    break
+            if update_brick:
+                break
+            time.sleep(0.05)
+        assert update_brick is not None, "no update-post controller brick found"
+
+        response = test_client.post(f"/admin/nanobar/api/bricks/{update_brick['regression_brick_id']}/replay")
+
+        assert response.status_code == 200
+        data = response.json()["result"]["data"]
+        assert data["replayed_response"]["status_code"] == 200
+        assert data["verdict"]["overall_passed"] is True
+        assert data["verdict"]["diffs"] == []
+
+        # The seeded row lives only in the shadow db, alongside the replay's own overwrite --
+        # the live post (still "Edited"/"edited body" from the real update above) is untouched.
+        real_post = test_client.get(f"/admin/app/api/posts/{post_id}").json()["result"]["data"]
+        assert real_post["title"] == "Edited"
+        assert real_post["body"] == "edited body"
+
+
 def test_api_replay_brick_action_honors_a_shadow_db_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Same end-to-end shape as `test_api_replay_brick_action_end_to_end`, but with
     `NANOBAR_BLOG_SHADOW_DB` set -- proves `ShadowPersistenceProfile`'s env var override actually
@@ -799,12 +1047,18 @@ def test_api_replay_brick_action_honors_a_shadow_db_override(tmp_path: Path, mon
     default_shadow_db_path = str(tmp_path / "blog_shadow.db")
     monkeypatch.setenv("NANOBAR_BLOG_SHADOW_DB", override_shadow_db_path)
 
+    db_path = str(tmp_path / "regression_bricks.db")
+    events_db_path = str(tmp_path / "events.db")
+    app_admin_db_path = str(tmp_path / "app_admin.db")
+    nanobar_admin_db_path = str(tmp_path / "nanobar_admin.db")
+    blog_db_path = str(tmp_path / "blog.db")
     app = build_app(
-        db_path=str(tmp_path / "regression_bricks.db"),
-        events_db_path=str(tmp_path / "events.db"),
-        app_admin_db_path=str(tmp_path / "app_admin.db"),
-        nanobar_admin_db_path=str(tmp_path / "nanobar_admin.db"),
-        blog_db_path=str(tmp_path / "blog.db"),
+        db_path=db_path,
+        events_db_path=events_db_path,
+        telemetry_db_path=str(tmp_path / "telemetry.db"),
+        app_admin_db_path=app_admin_db_path,
+        nanobar_admin_db_path=nanobar_admin_db_path,
+        blog_db_path=blog_db_path,
         route_manifest_path=str(tmp_path / "nanobar.api-routes.json"),
     )
     with TestClient(app) as test_client:
@@ -818,16 +1072,7 @@ def test_api_replay_brick_action_honors_a_shadow_db_override(tmp_path: Path, mon
         )
         assert created.status_code == 200
 
-        for _ in range(50):
-            generated = test_client.post("/admin/nanobar/api/generate-bricks")
-            if generated.json()["result"]["data"]["new_bricks"] > 0:
-                break
-            time.sleep(0.05)
-        else:
-            pytest.fail("captured events never reached events.db")
-
-        nanobars = test_client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
-        controller_nanobar = next(n for n in nanobars if n["nanobar_type"] == "controller-request-response")
+        controller_nanobar = _wait_for_controller_nanobar(test_client)
         bricks = test_client.get(f"/admin/nanobar/api/nanobars/{controller_nanobar['nanobar_id']}/bricks").json()[
             "result"
         ]["data"]
@@ -856,14 +1101,14 @@ def test_api_nanobar_bricks_not_found(client: TestClient) -> None:
 
 
 def test_api_nanobar_bricks_includes_review_status_defaulting_to_new(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    insert_brick(conn, _make_brick("rbrick-2", "sha256:two"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    insert_brick(session, _make_brick("rbrick-2", "sha256:two"))
+    session.close()
     _bind(db_path, "nb-1", "rbrick-1")
     _bind(db_path, "nb-1", "rbrick-2")
-    set_review_status(connect(db_path), "rbrick-2", "flagged", updated_by="alice")
+    set_review_status(_session(db_path), "rbrick-2", "flagged", updated_by="alice")
 
     response = client.get("/admin/nanobar/api/nanobars/nb-1/bricks")
 
@@ -880,10 +1125,10 @@ def test_api_nanobar_coverage_gaps_not_found(client: TestClient) -> None:
 
 
 def test_api_nanobar_coverage_gaps_lists_missing_required_scenarios(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))  # nanobar_type="api-response"
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))  # nanobar_type="api-response"
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    session.close()
     _bind(db_path, "nb-1", "rbrick-1")
 
     response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
@@ -896,12 +1141,12 @@ def test_api_nanobar_coverage_gaps_lists_missing_required_scenarios(db_path: str
 
 
 def test_api_nanobar_coverage_gaps_empty_when_fully_covered(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
-    insert_brick(conn, _make_brick("rbrick-2", "sha256:two", regression_scenario_type="invalid_input"))
-    insert_brick(conn, _make_brick("rbrick-3", "sha256:three", regression_scenario_type="server_error"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    insert_brick(session, _make_brick("rbrick-2", "sha256:two", regression_scenario_type="invalid_input"))
+    insert_brick(session, _make_brick("rbrick-3", "sha256:three", regression_scenario_type="server_error"))
+    session.close()
     _bind(db_path, "nb-1", "rbrick-1")
     _bind(db_path, "nb-1", "rbrick-2")
     _bind(db_path, "nb-1", "rbrick-3")
@@ -923,9 +1168,9 @@ def test_api_nanobar_coverage_gaps_auto_registers_a_worker_channel_on_first_sigh
     criticality-changing update) request for it auto-registers a per-channel entry in
     nanobar_type_system.db, seeded from the static generic "worker" baseline, and every later
     request for the *same* channel reuses that same entry rather than re-seeding it."""
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
 
@@ -944,10 +1189,10 @@ def test_api_nanobar_coverage_gaps_auto_registers_a_worker_channel_on_first_sigh
 
 
 def test_api_dynamic_taxonomy_filters_by_key(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
-    insert_nanobar(conn, _make_nanobar("nb-2", nanobar_type="worker-domain.orders"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
+    insert_nanobar(session, _make_nanobar("nb-2", nanobar_type="worker-domain.orders"))
+    session.close()
     client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
     client.get("/admin/nanobar/api/nanobars/nb-2/coverage-gaps")
 
@@ -968,10 +1213,10 @@ def test_api_dynamic_taxonomy_filters_by_key(db_path: str, client: TestClient) -
 def test_api_update_nanobar_criticality_change_recomputes_weight_for_a_worker_channel(
     db_path: str, client: TestClient
 ) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="worker-domain.appointments"))
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    session.close()
     _bind(db_path, "nb-1", "rbrick-1")
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 1.0})
@@ -988,9 +1233,9 @@ def test_api_nanobar_coverage_gaps_unrecognized_dynamic_prefix_needs_classificat
     # A nanobar_type that isn't in the static taxonomy and doesn't match any recognized dynamic
     # prefix (only "worker-" is registered) can't have coverage computed for it -- it needs a
     # human to classify it, not a silently guessed-at empty gaps list.
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="totally-unrecognized-type"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="totally-unrecognized-type"))
+    session.close()
 
     response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
 
@@ -1005,16 +1250,16 @@ def test_api_nanobar_coverage_gaps_unrecognized_dynamic_prefix_needs_classificat
 
 
 def test_api_nanobar_coverage_gaps_needs_classification_links_the_latest_matching_span(
-    db_path: str, events_db_path: str, client: TestClient
+    db_path: str, telemetry_db_path: str, client: TestClient
 ) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1", nanobar_type="totally-unrecognized-type"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", nanobar_type="totally-unrecognized-type"))
+    session.close()
 
-    events_conn = events_connect(events_db_path)
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(
-            events_conn,
+        _ingest_events(
+            telemetry_session,
             [
                 _make_span_event(
                     "evt-old",
@@ -1035,7 +1280,7 @@ def test_api_nanobar_coverage_gaps_needs_classification_links_the_latest_matchin
             ],
         )
     finally:
-        events_conn.close()
+        telemetry_session.close()
 
     response = client.get("/admin/nanobar/api/nanobars/nb-1/coverage-gaps")
 
@@ -1047,9 +1292,9 @@ def test_api_nanobar_coverage_gaps_needs_classification_links_the_latest_matchin
 
 
 def test_api_brick_detail_found(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.get("/admin/nanobar/api/bricks/rbrick-1")
 
@@ -1072,9 +1317,9 @@ def test_api_brick_detail_not_found(client: TestClient) -> None:
 
 
 def test_api_set_review_status_valid(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "flagged"})
 
@@ -1090,9 +1335,9 @@ def test_api_set_review_status_valid(db_path: str, client: TestClient) -> None:
 
 
 def test_api_set_review_status_via_patch(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "reviewed"})
 
@@ -1101,9 +1346,9 @@ def test_api_set_review_status_via_patch(db_path: str, client: TestClient) -> No
 
 
 def test_api_set_review_status_invalid_status_value(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={"status": "bogus"})
 
@@ -1121,9 +1366,9 @@ def test_api_set_review_status_brick_not_found(client: TestClient) -> None:
 
 
 def test_api_set_review_status_malformed_json_body(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post(
         "/admin/nanobar/api/bricks/rbrick-1/review-status",
@@ -1136,9 +1381,9 @@ def test_api_set_review_status_malformed_json_body(db_path: str, client: TestCli
 
 
 def test_api_set_review_status_missing_status_field(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json={})
 
@@ -1147,9 +1392,9 @@ def test_api_set_review_status_missing_status_field(db_path: str, client: TestCl
 
 
 def test_api_set_review_status_body_not_an_object(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/review-status", json=["flagged"])
 
@@ -1158,9 +1403,9 @@ def test_api_set_review_status_body_not_an_object(db_path: str, client: TestClie
 
 
 def test_api_list_nanobars_includes_type_and_navigation_fields(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     data = client.get("/admin/nanobar/api/nanobars").json()["result"]["data"]["items"]
 
@@ -1171,9 +1416,9 @@ def test_api_list_nanobars_includes_type_and_navigation_fields(db_path: str, cli
 
 
 def test_api_brick_detail_includes_scenario_type_scenario_and_tags(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", status_code=404))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one", status_code=404))
+    session.close()
 
     data = client.get("/admin/nanobar/api/bricks/rbrick-1").json()["result"]["data"]
 
@@ -1188,9 +1433,9 @@ def test_api_brick_detail_includes_scenario_type_scenario_and_tags(db_path: str,
 
 
 def test_api_update_nanobar_partial_update(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     first = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
     assert first.status_code == 200
@@ -1205,6 +1450,20 @@ def test_api_update_nanobar_partial_update(db_path: str, client: TestClient) -> 
     assert data["scenario_description"] == "Fetches an order."
 
 
+def test_api_update_nanobar_sets_app_box(db_path: str, client: TestClient) -> None:
+    # app_box is editable the same way domain is -- independent field, independent PATCH value.
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1", domain="admin/app", app_box=None))
+    session.close()
+
+    response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"app_box": "admin/app"})
+
+    assert response.status_code == 200
+    data = response.json()["result"]["data"]
+    assert data["app_box"] == "admin/app"
+    assert data["domain"] == "admin/app"  # untouched by an app_box-only edit
+
+
 def test_api_update_nanobar_not_found(client: TestClient) -> None:
     response = client.patch("/admin/nanobar/api/nanobars/does-not-exist", json={"label": "X"})
 
@@ -1213,9 +1472,9 @@ def test_api_update_nanobar_not_found(client: TestClient) -> None:
 
 
 def test_api_update_nanobar_rejects_non_string_field(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": 123})
 
@@ -1224,9 +1483,9 @@ def test_api_update_nanobar_rejects_non_string_field(db_path: str, client: TestC
 
 
 def test_api_update_nanobar_rejects_malformed_json(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch(
         "/admin/nanobar/api/nanobars/nb-1", content=b"{not valid json", headers={"content-type": "application/json"}
@@ -1237,9 +1496,9 @@ def test_api_update_nanobar_rejects_malformed_json(db_path: str, client: TestCli
 
 
 def test_api_update_nanobar_rejects_body_not_an_object(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json=["label"])
 
@@ -1247,9 +1506,9 @@ def test_api_update_nanobar_rejects_body_not_an_object(db_path: str, client: Tes
 
 
 def test_api_update_nanobar_sets_criticality(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 0.9})
 
@@ -1260,9 +1519,9 @@ def test_api_update_nanobar_sets_criticality(db_path: str, client: TestClient) -
 def test_api_update_nanobar_criticality_defaults_to_current_value_when_omitted(
     db_path: str, client: TestClient
 ) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 0.8})
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
@@ -1271,10 +1530,10 @@ def test_api_update_nanobar_criticality_defaults_to_current_value_when_omitted(
 
 
 def test_api_update_nanobar_criticality_change_recomputes_regression_weight(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one", regression_scenario_type="success"))
+    session.close()
     _bind(db_path, "nb-1", "rbrick-1")
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 1.0})
@@ -1287,9 +1546,9 @@ def test_api_update_nanobar_criticality_change_recomputes_regression_weight(db_p
 def test_api_update_nanobar_without_criticality_change_does_not_recompute_weight(
     db_path: str, client: TestClient
 ) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"label": "Get order"})
 
@@ -1297,9 +1556,9 @@ def test_api_update_nanobar_without_criticality_change_does_not_recompute_weight
 
 
 def test_api_update_nanobar_rejects_criticality_out_of_range(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": 1.5})
 
@@ -1308,9 +1567,9 @@ def test_api_update_nanobar_rejects_criticality_out_of_range(db_path: str, clien
 
 
 def test_api_update_nanobar_rejects_criticality_bool(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": True})
 
@@ -1318,9 +1577,9 @@ def test_api_update_nanobar_rejects_criticality_bool(db_path: str, client: TestC
 
 
 def test_api_update_nanobar_rejects_criticality_non_number(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_nanobar(conn, _make_nanobar("nb-1"))
-    conn.close()
+    session = _session(db_path)
+    insert_nanobar(session, _make_nanobar("nb-1"))
+    session.close()
 
     response = client.patch("/admin/nanobar/api/nanobars/nb-1", json={"criticality": "high"})
 
@@ -1328,9 +1587,9 @@ def test_api_update_nanobar_rejects_criticality_non_number(db_path: str, client:
 
 
 def test_api_set_brick_scenario_partial_update(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     first = client.post(
         "/admin/nanobar/api/bricks/rbrick-1/scenario", json={"regression_scenario_label": "Order not found"}
@@ -1362,9 +1621,9 @@ def test_api_set_brick_scenario_brick_not_found(client: TestClient) -> None:
 
 
 def test_api_set_brick_scenario_rejects_non_string_field(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/scenario", json={"description": 123})
 
@@ -1373,9 +1632,9 @@ def test_api_set_brick_scenario_rejects_non_string_field(db_path: str, client: T
 
 
 def test_api_set_brick_scenario_rejects_malformed_json(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post(
         "/admin/nanobar/api/bricks/rbrick-1/scenario",
@@ -1388,9 +1647,9 @@ def test_api_set_brick_scenario_rejects_malformed_json(db_path: str, client: Tes
 
 
 def test_api_set_brick_scenario_rejects_body_not_an_object(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/scenario", json=["label"])
 
@@ -1398,9 +1657,9 @@ def test_api_set_brick_scenario_rejects_body_not_an_object(db_path: str, client:
 
 
 def test_api_add_and_remove_brick_tags(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     added_first = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
     added_second = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "checkout"})
@@ -1420,9 +1679,9 @@ def test_api_add_and_remove_brick_tags(db_path: str, client: TestClient) -> None
 
 
 def test_api_add_brick_tag_is_idempotent(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": "flaky"})
@@ -1438,9 +1697,9 @@ def test_api_add_brick_tag_brick_not_found(client: TestClient) -> None:
 
 
 def test_api_add_brick_tag_rejects_missing_tag_field(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={})
 
@@ -1449,9 +1708,9 @@ def test_api_add_brick_tag_rejects_missing_tag_field(db_path: str, client: TestC
 
 
 def test_api_add_brick_tag_rejects_empty_tag(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post("/admin/nanobar/api/bricks/rbrick-1/tags", json={"tag": ""})
 
@@ -1459,9 +1718,9 @@ def test_api_add_brick_tag_rejects_empty_tag(db_path: str, client: TestClient) -
 
 
 def test_api_add_brick_tag_rejects_malformed_json(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.post(
         "/admin/nanobar/api/bricks/rbrick-1/tags",
@@ -1481,9 +1740,9 @@ def test_api_remove_brick_tag_brick_not_found(client: TestClient) -> None:
 
 
 def test_api_remove_brick_tag_not_present_is_a_no_op(db_path: str, client: TestClient) -> None:
-    conn = connect(db_path)
-    insert_brick(conn, _make_brick("rbrick-1", "sha256:one"))
-    conn.close()
+    session = _session(db_path)
+    insert_brick(session, _make_brick("rbrick-1", "sha256:one"))
+    session.close()
 
     response = client.delete("/admin/nanobar/api/bricks/rbrick-1/tags/never-added")
 
@@ -1552,18 +1811,18 @@ def test_api_list_traces_empty(client: TestClient) -> None:
     assert response.json()["result"]["data"]["items"] == []
 
 
-def test_api_list_traces_returns_summaries(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
+def test_api_list_traces_returns_summaries(telemetry_db_path: str, client: TestClient) -> None:
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(
-            conn,
+        _ingest_events(
+            telemetry_session,
             [
                 _make_span_event("evt-1", "tr-1", monotonic_ns=1_000),
                 _make_span_event("evt-2", "tr-1", monotonic_ns=2_000),
             ],
         )
     finally:
-        conn.close()
+        telemetry_session.close()
 
     # _make_span_event's fixed historical recorded_at_ns predates "today" -- show_all=1 opts out
     # of the traces list's real, server-side default date window (see the search-and-replay
@@ -1579,12 +1838,12 @@ def test_api_list_traces_returns_summaries(events_db_path: str, client: TestClie
     assert body["total"] == 1
 
 
-def test_api_list_traces_defaults_to_todays_traces_only(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
+def test_api_list_traces_defaults_to_todays_traces_only(telemetry_db_path: str, client: TestClient) -> None:
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(conn, [_make_span_event("evt-old", "tr-old", monotonic_ns=1_000)])
+        _ingest_events(telemetry_session, [_make_span_event("evt-old", "tr-old", monotonic_ns=1_000)])
     finally:
-        conn.close()
+        telemetry_session.close()
 
     response = client.get("/admin/nanobar/api/traces")
 
@@ -1606,11 +1865,11 @@ def test_api_list_traces_invalid_created_after(client: TestClient) -> None:
     assert response.json()["status"] == "error"
 
 
-def test_api_trace_facets_returns_distinct_values(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
+def test_api_trace_facets_returns_distinct_values(telemetry_db_path: str, client: TestClient) -> None:
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(
-            conn,
+        _ingest_events(
+            telemetry_session,
             [
                 _make_span_event(
                     "evt-1",
@@ -1622,7 +1881,7 @@ def test_api_trace_facets_returns_distinct_values(events_db_path: str, client: T
             ],
         )
     finally:
-        conn.close()
+        telemetry_session.close()
 
     response = client.get("/admin/nanobar/api/traces/facets", params={"show_all": "1"})
 
@@ -1632,18 +1891,18 @@ def test_api_trace_facets_returns_distinct_values(events_db_path: str, client: T
     assert "nanobar_types" in data
 
 
-def test_api_trace_spans_ordered_and_not_found(events_db_path: str, client: TestClient) -> None:
-    conn = events_connect(events_db_path)
+def test_api_trace_spans_ordered_and_not_found(telemetry_db_path: str, client: TestClient) -> None:
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
-        insert_events(
-            conn,
+        _ingest_events(
+            telemetry_session,
             [
                 _make_span_event("evt-late", "tr-1", monotonic_ns=3_000, span_id="span-late"),
                 _make_span_event("evt-early", "tr-1", monotonic_ns=1_000, span_id="span-early"),
             ],
         )
     finally:
-        conn.close()
+        telemetry_session.close()
 
     ok = client.get("/admin/nanobar/api/traces/tr-1/spans")
     missing = client.get("/admin/nanobar/api/traces/does-not-exist/spans")
@@ -1816,34 +2075,37 @@ def test_api_update_settings_rejects_invalid_json(client: TestClient) -> None:
 
 
 def test_disabling_tracing_via_settings_stops_new_spans_from_being_captured(
-    events_db_path: str, client: TestClient
+    telemetry_db_path: str, client: TestClient
 ) -> None:
     client.post("/admin/nanobar/api/settings", json={"tracing_enabled": False})
 
-    conn = events_connect(events_db_path)
+    telemetry_session = build_telemetry_session_factory(telemetry_db_path)()
     try:
 
-        def _trace_event_count() -> int:
-            return int(conn.execute("SELECT COUNT(*) FROM events WHERE channel = 'trace'").fetchone()[0])
+        def _trace_span_count() -> int:
+            telemetry_session.rollback()  # see test_thin_slice_proof.py -- a long-lived session
+            # needs a fresh transaction to observe TelemetryDrainWorker's own (separate-session,
+            # separate-thread) commits, not a stale read snapshot.
+            return telemetry_session.query(Span).filter(Span.channel == "trace").count()
 
         # Let anything already in flight (the login flow, or the settings POST above --
         # both issued while tracing was still enabled) finish its background-thread flush
         # before taking the baseline, so a delayed flush can't be mistaken for a new event.
         baseline = -1
         for _ in range(30):
-            current = _trace_event_count()
+            current = _trace_span_count()
             if current == baseline:
                 break
             baseline = current
             time.sleep(0.05)
 
         client.get("/admin/nanobar/api/nanobars")
-        time.sleep(1.0)  # longer than EventThread's 0.5s batch window, so a wrongly-emitted
-        # event would have already flushed by the time this checks.
+        time.sleep(1.0)  # longer than TelemetryDrainWorker's 0.5s batch window, so a
+        # wrongly-emitted event would have already flushed by the time this checks.
 
-        count_after = _trace_event_count()
+        count_after = _trace_span_count()
     finally:
-        conn.close()
+        telemetry_session.close()
 
     assert count_after == baseline
 
@@ -1902,6 +2164,30 @@ def test_build_app_without_explicit_events_db_path_uses_resolve_events_db_path(
     app = build_app(db_path=str(tmp_path / "regression_bricks.db"))
 
     assert app.state.events_db_path == override
+
+
+def test_resolve_telemetry_db_path_uses_env_var_when_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    override = str(tmp_path / "custom-telemetry.db")
+    monkeypatch.setenv(TELEMETRY_DB_PATH_ENV_VAR, override)
+
+    assert resolve_telemetry_db_path() == override
+
+
+def test_resolve_telemetry_db_path_defaults_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(TELEMETRY_DB_PATH_ENV_VAR, raising=False)
+
+    assert resolve_telemetry_db_path() == str(TELEMETRY_DEFAULT_DB_PATH)
+
+
+def test_build_app_without_explicit_telemetry_db_path_uses_resolve_telemetry_db_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override = str(tmp_path / "env-configured-telemetry.db")
+    monkeypatch.setenv(TELEMETRY_DB_PATH_ENV_VAR, override)
+
+    app = build_app(db_path=str(tmp_path / "regression_bricks.db"))
+
+    assert app.state.telemetry_db_path == override
 
 
 def test_resolve_app_admin_db_path_uses_env_var_when_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

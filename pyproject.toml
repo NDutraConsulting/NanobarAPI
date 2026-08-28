@@ -21,6 +21,14 @@ dependencies = [
     # external OTel setup or backend — see that function's docstring for why a real SDK
     # provider, not just the opentelemetry-api's NoOp default, is needed for this.
     "opentelemetry-sdk>=1.20",
+    # Real runtime dependency (2026-08-27, regression-brick analysis Phase 4): promoted from
+    # the dev-only dependency group -- `regression_brick_analysis_service.py` dispatches HTTP-
+    # shaped replay requests over a real `httpx2.Client`, not `starlette.testclient.TestClient`,
+    # per `.focusari/2026-08-27-regression-brick-clarification.md` Part 3 (replay targets a
+    # persistent shadow deployment over the network). Same package the dev group already pulls
+    # in transitively for `TestClient` (`httpx2`, not `httpx` -- see the dev group's own
+    # comment), now a direct import too.
+    "httpx2>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -37,10 +45,10 @@ dev = [
     "mypy==2.1.0",
     "ruff==0.16.0",
     "pytest==9.1.1",
-    # Needed by starlette.testclient.TestClient — real Starlette prefers httpx2 over httpx now
-    # (falls back to httpx only with a deprecation warning; see .focusari/
-    # nanobarapi-beta-with-starlette-build-plan-and-tasks.md §5.3).
-    "httpx2>=2.0.0",
+    # httpx2 was needed here for starlette.testclient.TestClient (real Starlette prefers it
+    # over httpx now; see .focusari/nanobarapi-beta-with-starlette-build-plan-and-tasks.md
+    # §5.3) -- now a direct main dependency (see [project] dependencies above), pulled in
+    # transitively via "NanobarAPI[serve]" above, so no separate pin is needed here anymore.
     # Demo/seed-script only: focusari_kahnban is a real, already-tested app (built on
     # focusari_asgi, not this project's Starlette base) used purely as a realistic traffic
     # source for the regression-brick capture pipeline. Not a runtime dependency of nanobar_api

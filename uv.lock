@@ -504,6 +504,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "httpx2" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "sqlalchemy" },
@@ -519,7 +520,6 @@ serve = [
 dev = [
     { name = "coverage" },
     { name = "focusari-kahnban" },
-    { name = "httpx2" },
     { name = "mypy" },
     { name = "nanobarapi", extra = ["serve"] },
     { name = "pytest" },
@@ -529,6 +529,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.0" },
+    { name = "httpx2", specifier = ">=2.0.0" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -541,7 +542,6 @@ provides-extras = ["serve"]
 dev = [
     { name = "coverage", specifier = ">=7.8.2" },
     { name = "focusari-kahnban", editable = "../focusari_kahnban" },
-    { name = "httpx2", specifier = ">=2.0.0" },
     { name = "mypy", specifier = "==2.1.0" },
     { name = "nanobarapi", extras = ["serve"] },
     { name = "pytest", specifier = "==9.1.1" },

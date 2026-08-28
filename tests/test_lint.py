@@ -18,9 +18,9 @@ def test_clean_service_module_has_no_violations(tmp_path: Path) -> None:
         tmp_path,
         "clean_service.py",
         """
-from nanobar_api.services import NanobarService
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService
 
-class OrderService(NanobarService):
+class OrderService(NanobarAPIService):
     def handle(self, request):
         return request
 """,
@@ -35,7 +35,7 @@ def test_module_not_defining_a_service_is_skipped_even_with_a_construction_call(
         "not_a_service.py",
         """
 def build():
-    return NanobarController()
+    return NanobarAPIController()
 """,
     )
 
@@ -47,14 +47,14 @@ def test_service_module_constructing_another_service_is_a_violation(tmp_path: Pa
         tmp_path,
         "bad_service.py",
         """
-from nanobar_api.services import NanobarService
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService
 
-class OrderService(NanobarService):
+class OrderService(NanobarAPIService):
     def handle(self, request):
         other = PaymentService()
         return other.handle(request)
 
-class PaymentService(NanobarService):
+class PaymentService(NanobarAPIService):
     def handle(self, request):
         return request
 """,
@@ -72,11 +72,11 @@ def test_service_module_constructing_a_controller_is_a_violation(tmp_path: Path)
         tmp_path,
         "bad_service2.py",
         """
-from nanobar_api.services import NanobarService
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService
 
-class OrderService(NanobarService):
+class OrderService(NanobarAPIService):
     def handle(self, request):
-        controller = NanobarController()
+        controller = NanobarAPIController()
         return controller
 """,
     )
@@ -84,7 +84,7 @@ class OrderService(NanobarService):
     violations = check_service_boundaries([path])
 
     assert len(violations) == 1
-    assert "NanobarController" in violations[0]
+    assert "NanobarAPIController" in violations[0]
 
 
 def test_main_succeeds_silently_for_clean_paths(tmp_path: Path) -> None:
@@ -98,11 +98,11 @@ def test_main_raises_system_exit_on_violations(tmp_path: Path) -> None:
         tmp_path,
         "bad.py",
         """
-from nanobar_api.services import NanobarService
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService
 
-class OrderService(NanobarService):
+class OrderService(NanobarAPIService):
     def handle(self, request):
-        return NanobarController()
+        return NanobarAPIController()
 """,
     )
 
@@ -133,18 +133,18 @@ def test_dotted_base_class_name_is_recognized(tmp_path: Path) -> None:
         tmp_path,
         "dotted_base.py",
         """
-import nanobar_api.services as services
+import nanobar_api.framework.nanobar_api_service as services
 
-class OrderService(services.NanobarService):
+class OrderService(services.NanobarAPIService):
     def handle(self, request):
-        return services.NanobarController()
+        return services.NanobarAPIController()
 """,
     )
 
     violations = check_service_boundaries([path])
 
     assert len(violations) == 1
-    assert "NanobarController" in violations[0]
+    assert "NanobarAPIController" in violations[0]
 
 
 def test_non_name_non_attribute_base_and_call_are_ignored(tmp_path: Path) -> None:
@@ -156,9 +156,9 @@ def test_non_name_non_attribute_base_and_call_are_ignored(tmp_path: Path) -> Non
         "odd_shapes.py",
         """
 from collections.abc import Sequence
-from nanobar_api.services import NanobarService
+from nanobar_api.framework.nanobar_api_service import NanobarAPIService
 
-class OrderService(NanobarService, Sequence[int]):
+class OrderService(NanobarAPIService, Sequence[int]):
     handlers = {}
 
     def handle(self, request):

@@ -21,11 +21,11 @@ from app.services.blog_service import (
     MarkNotificationReadRequest,
     UpdatePostRequest,
 )
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.validation import parse
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 
-class CreatePostGate(NanobarValidatorGate):
+class CreatePostGate(NanobarAPIValidatorGate):
     controller_cls = CreatePostController
 
     def validate(self, request: Request) -> CreatePostRequest:
@@ -38,7 +38,7 @@ class _UpdatePostBody:
     body: str
 
 
-class UpdatePostGate(NanobarValidatorGate):
+class UpdatePostGate(NanobarAPIValidatorGate):
     controller_cls = UpdatePostController
 
     def validate(self, request: Request) -> UpdatePostRequest:
@@ -48,14 +48,14 @@ class UpdatePostGate(NanobarValidatorGate):
         return UpdatePostRequest(post_id=request.path_params["post_id"], title=fields.title, body=fields.body)
 
 
-class BookAppointmentGate(NanobarValidatorGate):
+class BookAppointmentGate(NanobarAPIValidatorGate):
     controller_cls = BookAppointmentController
 
     def validate(self, request: Request) -> BookAppointmentRequest:
         return parse(BookAppointmentRequest, request.state.json_body or {})
 
 
-class MarkNotificationReadGate(NanobarValidatorGate):
+class MarkNotificationReadGate(NanobarAPIValidatorGate):
     controller_cls = MarkNotificationReadController
 
     def validate(self, request: Request) -> MarkNotificationReadRequest:

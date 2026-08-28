@@ -10,13 +10,13 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from nanobar_api.controllers import NanobarController
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
+from nanobar_api.framework.nanobar_api_controller import NanobarAPIController
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 from nanobar_api.middleware.trace import EventBusTraceMiddleware
 from nanobar_api.routing import NanobarRouteRule, NanobarRouteSet, RestRouteAdapter
 from nanobar_api.telemetry import NanobarTelemetry
 from nanobar_api.validation import parse
-from nanobar_api.validator_gate import NanobarValidatorGate
 
 # A real SDK TracerProvider so spans carry real, non-NoOp trace/span ids -- matches
 # test_telemetry.py's own bootstrap, the one place per test process this is set.
@@ -29,7 +29,7 @@ class GreetRequest:
     name: str
 
 
-class GreetController(NanobarController):
+class GreetController(NanobarAPIController):
     def load_required_services(self) -> None:
         self.services["greeter"] = lambda name: f"hello, {name}"
 
@@ -43,7 +43,7 @@ class GreetController(NanobarController):
         return {"message": result}
 
 
-class GreetGate(NanobarValidatorGate):
+class GreetGate(NanobarAPIValidatorGate):
     controller_cls = GreetController
 
     def validate(self, request: Request) -> GreetRequest:
@@ -55,7 +55,7 @@ class _GreetSet(NanobarRouteSet):
     rules = (NanobarRouteRule(key="POST /hello", gate=GreetGate),)
 
 
-class _ConcreteGate(NanobarValidatorGate):
+class _ConcreteGate(NanobarAPIValidatorGate):
     controller_cls = GreetController
 
     def validate(self, request: Request) -> object:
@@ -76,7 +76,7 @@ def _build_app() -> tuple[Starlette, EventQueueRepository]:
 
 def test_cannot_instantiate_abstract_gate_directly() -> None:
     with pytest.raises(TypeError):
-        NanobarValidatorGate()  # type: ignore[abstract]
+        NanobarAPIValidatorGate()  # type: ignore[abstract]
 
 
 def test_concrete_subclass_implementing_validate_is_instantiable() -> None:

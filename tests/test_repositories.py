@@ -6,10 +6,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from nanobar_api.repositories import CacheBackend, InMemoryCacheBackend, NanobarRepository, Repository
+from nanobar_api.framework.nanobar_api_repository import (
+    CacheBackend,
+    InMemoryCacheBackend,
+    NanobarAPIRepository,
+    Repository,
+)
 
 
-class _OrderRepository(NanobarRepository):
+class _OrderRepository(NanobarAPIRepository):
     def cache_key(self, *args: Any, **kwargs: Any) -> str:
         return f"order:{args[0]}"
 
@@ -23,7 +28,7 @@ def test_cannot_instantiate_abstract_nanobar_repository_directly() -> None:
     session = _session()
     try:
         with pytest.raises(TypeError):
-            NanobarRepository(session)  # type: ignore[abstract]
+            NanobarAPIRepository(session)  # type: ignore[abstract]
     finally:
         session.close()
 

@@ -8,15 +8,15 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 from starlette.applications import Starlette
 
-from nanobar_api.controllers import NanobarController
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
+from nanobar_api.framework.nanobar_api_controller import NanobarAPIController
 from nanobar_api.telemetry import NanobarTelemetry
 
 if isinstance(otel_trace.get_tracer_provider(), otel_trace.NoOpTracerProvider | otel_trace.ProxyTracerProvider):
     otel_trace.set_tracer_provider(TracerProvider())
 
 
-class _MinimalController(NanobarController):
+class _MinimalController(NanobarAPIController):
     def load_required_services(self) -> None:
         pass
 
@@ -30,7 +30,7 @@ class _MinimalController(NanobarController):
         return {"result": result}
 
 
-class _FallbackController(NanobarController):
+class _FallbackController(NanobarAPIController):
     def load_required_services(self) -> None:
         raise RuntimeError("required service unavailable")
 
@@ -53,7 +53,7 @@ def test_cannot_instantiate_abstract_controller_directly() -> None:
         app = None
 
     with pytest.raises(TypeError):
-        NanobarController(_Request(), "test")  # type: ignore[abstract, arg-type]
+        NanobarAPIController(_Request(), "test")  # type: ignore[abstract, arg-type]
 
 
 def test_init_falls_back_when_load_required_services_raises() -> None:
@@ -95,7 +95,7 @@ def test_handle_runs_etl_workflow_and_build_response_then_captures_brick() -> No
 
 
 def test_controller_failure_propagates_uncaught() -> None:
-    class _BoomController(NanobarController):
+    class _BoomController(NanobarAPIController):
         def load_required_services(self) -> None:
             pass
 

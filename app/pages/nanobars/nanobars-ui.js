@@ -9,6 +9,7 @@ const groupTemplate = document.getElementById("nanobar-type-group-template");
 const itemTemplate = document.getElementById("nanobar-item-template");
 const nanobarTypeFilterEl = document.getElementById("nanobar-type-filter");
 const domainFilterEl = document.getElementById("domain-filter");
+const appBoxFilterEl = document.getElementById("app-box-filter");
 const searchEl = document.getElementById("nanobar-search");
 const generateBricksBtnEl = document.getElementById("generate-bricks-btn");
 const generateBricksStatusEl = document.getElementById("generate-bricks-status");
@@ -20,6 +21,7 @@ const paginationSummaryEl = document.getElementById("pagination-summary");
 export const elements = {
   nanobarTypeFilter: nanobarTypeFilterEl,
   domainFilter: domainFilterEl,
+  appBoxFilter: appBoxFilterEl,
   search: searchEl,
   generateBricksBtn: generateBricksBtnEl,
   paginationPrevBtn: paginationPrevBtnEl,
@@ -122,6 +124,39 @@ export function populateDomainFilter(domains) {
   }
 }
 
+//: `ALL_DOMAINS_VALUE`'s exact counterpart for the AppBox filter -- unlike domain, a real
+//: app_box value is never itself "" (it's always "admin/app"/"admin/nanobar"/"api"/"workers"),
+//: but the same sentinel shape is used anyway for consistency with the domain filter.
+export const ALL_APP_BOXES_VALUE = "__all__";
+
+/**
+ * Fills the AppBox filter <select> with one option per distinct app_box present in the data,
+ * plus the "All AppBoxes" default. The backend's `"(unmapped)"` sentinel (a nanobar with no
+ * app_box yet -- created before this field existed, not yet refreshed) renders as-is.
+ * Preserves the currently selected value if it's still one of the options.
+ * @param {string[]} appBoxes sorted, deduplicated app_box values
+ */
+export function populateAppBoxFilter(appBoxes) {
+  const previousValue = appBoxFilterEl.value;
+  appBoxFilterEl.textContent = "";
+
+  const allOption = document.createElement("option");
+  allOption.value = ALL_APP_BOXES_VALUE;
+  allOption.textContent = "All AppBoxes";
+  appBoxFilterEl.appendChild(allOption);
+
+  for (const appBox of appBoxes) {
+    const option = document.createElement("option");
+    option.value = appBox;
+    option.textContent = appBox;
+    appBoxFilterEl.appendChild(option);
+  }
+
+  if (previousValue === ALL_APP_BOXES_VALUE || appBoxes.includes(previousValue)) {
+    appBoxFilterEl.value = previousValue;
+  }
+}
+
 /** Show a transient status message (e.g. "Loading..."). */
 export function showStatus(message) {
   statusEl.textContent = message;
@@ -184,6 +219,22 @@ export function renderGroups(groups) {
       link.href = `/admin/nanobar/nanobars/${nanobar.nanobar_id}`;
 
       itemNode.querySelector(".nanobar-id").textContent = nanobar.nanobar_id;
+
+      // The API endpoint (or other monitor target) this nanobar's class of tests is anchored
+      // to -- `monitor_target_refs` can, in principle, hold more than one ref, but every nanobar
+      // this app's own domains produce has exactly one, `{target_type: "route", stable_name:
+      // "METHOD /path"}` (see nanobar_api.route_manifest); shown when present, the element
+      // removed entirely otherwise (an externally-seeded nanobar, e.g. from
+      // examples/seed_kahnban_bricks.py, may have no route-shaped ref at all) rather than
+      // leaving a visibly empty span, same pattern .nanobar-label already uses below.
+      const endpointEl = itemNode.querySelector(".nanobar-endpoint");
+      const routeRef = (nanobar.monitor_target_refs || []).find((ref) => ref.target_type === "route");
+      if (routeRef) {
+        endpointEl.textContent = routeRef.stable_name;
+      } else {
+        endpointEl.remove();
+      }
+
       itemNode.querySelector(".nanobar-system").textContent = nanobar.system_name;
       const labelEl = itemNode.querySelector(".nanobar-label");
       if (nanobar.label) {

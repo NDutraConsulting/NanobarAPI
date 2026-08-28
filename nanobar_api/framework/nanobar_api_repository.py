@@ -1,4 +1,4 @@
-"""`NanobarRepository` — extends the existing `Repository` (unchanged, still usable bare) with
+"""`NanobarAPIRepository` — extends the existing `Repository` (unchanged, still usable bare) with
 cache monitoring.
 
 Per `.focusari/nanobar_ServiceDomain_abstract_class_buildplan-with-tasks.md` §2: **not** a
@@ -48,7 +48,7 @@ class InMemoryCacheBackend:
         self._store.pop(key, None)
 
 
-class NanobarRepository(Repository, ABC):
+class NanobarAPIRepository(Repository, ABC):
     def __init__(self, session: Session, cache: CacheBackend | None = None) -> None:
         super().__init__(session)
         self._cache = cache if cache is not None else InMemoryCacheBackend()

@@ -7,14 +7,19 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from nanobar_api.eventbus.queue_repository import ChannelConfig, EventQueueRepository
-from nanobar_api.services import NanobarService, ServiceResult, ServiceResultBody, SourceInfoEntry
+from nanobar_api.framework.nanobar_api_service import (
+    NanobarAPIService,
+    ServiceResult,
+    ServiceResultBody,
+    SourceInfoEntry,
+)
 from nanobar_api.telemetry import NanobarTelemetry
 
 if isinstance(otel_trace.get_tracer_provider(), otel_trace.NoOpTracerProvider | otel_trace.ProxyTracerProvider):
     otel_trace.set_tracer_provider(TracerProvider())
 
 
-class _EchoService(NanobarService):
+class _EchoService(NanobarAPIService):
     def handle(self, request: Any) -> ServiceResult:
         return ServiceResult(status="success", result=ServiceResultBody(type="object", data=request, msg_summary=""))
 
@@ -27,7 +32,7 @@ def test_cannot_instantiate_abstract_service_directly() -> None:
     telemetry = NanobarTelemetry(_repository(), channel="trace")
 
     with pytest.raises(TypeError):
-        NanobarService(telemetry)  # type: ignore[abstract]
+        NanobarAPIService(telemetry)  # type: ignore[abstract]
 
 
 def test_service_result_defaults_to_empty_source_info() -> None:

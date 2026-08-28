@@ -44,7 +44,6 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -54,11 +53,13 @@ from focusari_kahnban.db import configure as configure_kahnban_db  # type: ignor
 from starlette.testclient import TestClient
 
 from nanobar_api.bricks import MonitorTargetRef, Nanobar, NanobarBrickBinding, RegressionBrick, generate_bricks
-from nanobar_api.bricks.store import bind_brick_to_nanobar, connect as bricks_connect, insert_nanobar, list_nanobars
 from nanobar_api.eventbus import ChannelConfig, EventQueueRepository, eventbus_lifespan
 from nanobar_api.eventbus.store import connect as events_connect
 from nanobar_api.middleware.snapshot import SnapshotMiddleware
 from nanobar_api.middleware.trace import EventBusTraceMiddleware, configure_tracing
+from nanobar_api.nanobar.repository import NanobarRepository
+from nanobar_api.persistence import build_session_factory as build_bricks_session_factory
+from nanobar_api.regression_brick.repository import RegressionBrickRepository
 
 #: examples/ is a repo-root sibling of app/ -- runtime data lives alongside the domain code
 #: that owns it, not in one shared directory: kahnban.db/events.db are cross-domain data under
@@ -136,16 +137,16 @@ def _label_for(method: str, path_template: str, resource: str) -> str:
     return f"{verb} {noun}"
 
 
-def _find_nanobar_by_stable_name(conn: sqlite3.Connection, stable_name: str) -> Nanobar | None:
-    for nanobar in list_nanobars(conn, target_type="openapi_operation"):
+def _find_nanobar_by_stable_name(nanobar_repository: NanobarRepository, stable_name: str) -> Nanobar | None:
+    for nanobar in nanobar_repository.list_nanobars(target_type="openapi_operation"):
         if any(ref.stable_name == stable_name for ref in nanobar.monitor_target_refs):
             return nanobar
     return None
 
 
-def _get_or_create_nanobar(conn: sqlite3.Connection, stable_name: str) -> tuple[Nanobar, bool]:
+def _get_or_create_nanobar(nanobar_repository: NanobarRepository, stable_name: str) -> tuple[Nanobar, bool]:
     """Returns (nanobar, was_newly_created)."""
-    existing = _find_nanobar_by_stable_name(conn, stable_name)
+    existing = _find_nanobar_by_stable_name(nanobar_repository, stable_name)
     if existing is not None:
         return existing, False
 
@@ -153,7 +154,6 @@ def _get_or_create_nanobar(conn: sqlite3.Connection, stable_name: str) -> tuple[
     resource = _resource_for_path_template(path_template)
 
     nanobar = Nanobar(
-        nanobar_id=f"nb-{uuid.uuid4().hex[:12]}",
         schema_version="1.0",
         system_name=SYSTEM_NAME,
         system_version=SYSTEM_VERSION,
@@ -169,11 +169,11 @@ def _get_or_create_nanobar(conn: sqlite3.Connection, stable_name: str) -> tuple[
         component_source_description=f"{SYSTEM_NAME}.routes.{resource}",
         domain=resource,  # e.g. "boards"/"lists"/"cards" -- the natural sub-domain within kahnban
     )
-    insert_nanobar(conn, nanobar)
+    nanobar_repository.create(nanobar)
     return nanobar, True
 
 
-def _process_bricks(bricks_conn: sqlite3.Connection, new_bricks: list[RegressionBrick]) -> tuple[int, int]:
+def _process_bricks(nanobar_repository: NanobarRepository, new_bricks: list[RegressionBrick]) -> tuple[int, int]:
     """Create/reuse one Nanobar per distinct (method, path-template) and bind every new
     brick to its Nanobar. Returns (nanobars_newly_created, bindings_created).
     """
@@ -185,12 +185,11 @@ def _process_bricks(bricks_conn: sqlite3.Connection, new_bricks: list[Regression
         stable_name = _stable_name_for_brick(brick)
         nanobar = resolved.get(stable_name)
         if nanobar is None:
-            nanobar, was_created = _get_or_create_nanobar(bricks_conn, stable_name)
+            nanobar, was_created = _get_or_create_nanobar(nanobar_repository, stable_name)
             resolved[stable_name] = nanobar
             nanobars_created += int(was_created)
 
-        bind_brick_to_nanobar(
-            bricks_conn,
+        nanobar_repository.bind_brick(
             NanobarBrickBinding(
                 nanobar_id=nanobar.nanobar_id,
                 regression_brick_id=brick.regression_brick_id,
@@ -198,7 +197,7 @@ def _process_bricks(bricks_conn: sqlite3.Connection, new_bricks: list[Regression
                 matcher_version="v1",
                 matched_by=CREATED_BY,
                 confidence=1.0,
-            ),
+            )
         )
         bindings_created += 1
 
@@ -351,14 +350,22 @@ def main() -> None:
     request_count = anyio.run(_capture_traffic)
 
     events_conn = events_connect(str(EVENTS_DB_PATH))
-    bricks_conn = bricks_connect(str(BRICKS_DB_PATH))
+    # A throwaway repository -- this script's own ORM-capture events land nowhere real. Still
+    # needs the "snapshot" channel configured, since NanobarORMWrapper's capture_layer() call
+    # defaults to it and raises KeyError against a repository with no channels at all.
+    bricks_session_factory = build_bricks_session_factory(
+        str(BRICKS_DB_PATH), repository=EventQueueRepository([ChannelConfig(name="snapshot")])
+    )
+    bricks_session = bricks_session_factory()
     try:
-        new_bricks = generate_bricks(events_conn, bricks_conn, channel="snapshot", created_by=CREATED_BY)
-        nanobars_created, bindings_created = _process_bricks(bricks_conn, new_bricks)
-        total_nanobars = len(list_nanobars(bricks_conn))
+        brick_repository = RegressionBrickRepository(bricks_session)
+        nanobar_repository = NanobarRepository(bricks_session)
+        new_bricks = generate_bricks(events_conn, brick_repository, channel="snapshot", created_by=CREATED_BY)
+        nanobars_created, bindings_created = _process_bricks(nanobar_repository, new_bricks)
+        total_nanobars = len(nanobar_repository.list_nanobars())
     finally:
         events_conn.close()
-        bricks_conn.close()
+        bricks_session.close()
 
     print("=== seed_kahnban_bricks summary ===")
     print(f"HTTP requests driven through kahnban : {request_count}")

@@ -109,6 +109,61 @@ def test_dispatch_success_captures_event_to_subscriber_brick() -> None:
     assert captured.payload["response"] == {"handled_by": "a"}
 
 
+def test_dispatch_now_invokes_subscribers_synchronously_and_returns_the_event() -> None:
+    bus, repository = _bus()
+    calls: list[str] = []
+    bus.subscribe("domain.orders", _RecordingCallback("a", calls))
+
+    event = bus.dispatch_now("domain.orders", {"order_id": "o1"})
+
+    assert calls == ["a"]
+    assert event.channel == "domain.orders"
+    assert event.payload == {"order_id": "o1"}
+    # Never queued -- run_forever()'s loop never sees it, so it's not sitting in the repository.
+    assert repository.get_any(["domain.orders"], timeout=0.05) is None
+
+
+def test_dispatch_now_captures_an_event_to_subscriber_brick_like_normal_dispatch() -> None:
+    bus, repository = _bus()
+    bus.subscribe("domain.orders", _RecordingCallback("a", []))
+
+    bus.dispatch_now("domain.orders", {"x": 1})
+
+    captured = repository.get_any(["snapshot"], timeout=1.0)
+    assert captured is not None
+    assert captured.payload["nanobar_type"] == "event-to-subscriber"
+    assert captured.payload["response"] == {"handled_by": "a"}
+
+
+def test_dispatch_now_rejects_a_non_domain_channel() -> None:
+    bus, _ = _bus()
+
+    with pytest.raises(ValueError, match="must start with"):
+        bus.dispatch_now("not-a-domain-channel", {})
+
+
+def test_dispatch_now_propagates_ambient_trace_context_onto_the_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole reason `dispatch_now()` exists over `publish()` + the background loop: an
+    ambient `current_trace_id` (e.g. set by `EventBusTraceMiddleware` for the HTTP request
+    calling this) must be exactly what the resulting event carries -- `publish()` alone stamps
+    it on the `Event`, but the *dispatch* (and its `capture_layer()` span) would still happen
+    later, in a separate thread where the contextvar is unset."""
+    from nanobar_api.middleware.trace import current_span_id, current_trace_id
+
+    bus, _ = _bus()
+    bus.subscribe("domain.orders", _RecordingCallback("a", []))
+    trace_token = current_trace_id.set("trace-123")
+    span_token = current_span_id.set("span-456")
+    try:
+        event = bus.dispatch_now("domain.orders", {})
+    finally:
+        current_trace_id.reset(trace_token)
+        current_span_id.reset(span_token)
+
+    assert event.trace_id == "trace-123"
+    assert event.span_id == "span-456"
+
+
 def test_dispatch_one_failing_subscriber_does_not_block_the_other() -> None:
     bus, repository = _bus()
     calls: list[str] = []

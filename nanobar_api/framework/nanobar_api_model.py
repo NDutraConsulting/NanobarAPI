@@ -1,4 +1,4 @@
-"""`NanobarModel` — a declaration surface on top of the existing, generic
+"""`NanobarAPIModel` — a declaration surface on top of the existing, generic
 `StateMachine[StateT]` (`nanobar_api/state_machine.py`, not touched by this module), registering
 which fields of a model/dataclass are state-machine-governed and which are idempotency-relevant.
 
@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 from nanobar_api.state_machine import StateMachine
 
 
-class NanobarModel(ABC):
+class NanobarAPIModel(ABC):
     #: field name -> the full set of allowed values for that field, not a per-state transition
     #: graph. `state_machine_for()` below treats this permissively (any declared state may
     #: transition to any other) since that's all this flat shape can express — a model needing

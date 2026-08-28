@@ -139,9 +139,9 @@ CREATE TABLE IF NOT EXISTS admin_users (
 
 def connect(db_path: str) -> sqlite3.Connection:
     """Opens a connection to the admin-auth SQLite database ("adminDB"), creating the schema
-    idempotently -- same `connect()` shape as `nanobar_api.bricks.store.connect`/
-    `nanobar_api.eventbus.store.connect`, this project's established per-database-file pattern.
-    Both `SQLiteSessionBackend` and `SQLiteAdminUserStore` share this one file/schema."""
+    idempotently -- same `connect()` shape as `nanobar_api.eventbus.store.connect`, this
+    project's established per-database-file pattern. Both `SQLiteSessionBackend` and
+    `SQLiteAdminUserStore` share this one file/schema."""
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.executescript(SESSION_SCHEMA_SQL)

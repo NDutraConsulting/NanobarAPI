@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from nanobar_api.envelope import success
-from nanobar_api.validator_gate import NanobarValidatorGate
+from nanobar_api.framework.nanobar_api_validator_gate import NanobarAPIValidatorGate
 
 RouteHandler = Callable[..., Any]
 
@@ -63,7 +63,7 @@ def adapt_handler(func: RouteHandler) -> Callable[[Request], Awaitable[Response]
 @dataclass(frozen=True)
 class NanobarRouteRule:
     """One route declaration: a path/method (REST) or service/method key (gRPC), and the
-    `NanobarValidatorGate` subclass that handles it.
+    `NanobarAPIValidatorGate` subclass that handles it.
 
     `middleware` is additive over the owning `NanobarRouteSet.middleware`, domain first — real,
     not speculative: a rule that must bypass part of its domain's default middleware stack (e.g.
@@ -72,7 +72,7 @@ class NanobarRouteRule:
     """
 
     key: str
-    gate: type[NanobarValidatorGate]
+    gate: type[NanobarAPIValidatorGate]
     transport: Literal["rest", "grpc"] = "rest"
     label: str | None = None
     domain: str | None = None
@@ -108,7 +108,7 @@ def _parse_rest_route_key(key: str) -> tuple[str, str]:
     return method.upper(), path
 
 
-def _gate_endpoint(gate_cls: type[NanobarValidatorGate], request_type: str) -> Callable[[Request], Awaitable[Any]]:
+def _gate_endpoint(gate_cls: type[NanobarAPIValidatorGate], request_type: str) -> Callable[[Request], Awaitable[Any]]:
     async def endpoint(request: Request) -> Any:
         return await gate_cls()(request, request_type)
 

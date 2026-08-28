@@ -12,7 +12,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from nanobar_api.bricks.schema import Nanobar, RegressionBrick
+from nanobar_api.nanobar.model import Nanobar
+from nanobar_api.regression_brick.model import RegressionBrick
 
 #: The framework's own pinned baseline taxonomy -- a "lock file" in the same spirit as
 #: `uv.lock`: a static, versioned, checked-in default. Dynamic, runtime-registered entries

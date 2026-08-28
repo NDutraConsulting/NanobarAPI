@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_trace_id", default=None)
 current_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_span_id", default=None)
 
-#: The active route key ("METHOD /path"), set by `NanobarController.handle()` at controller
+#: The active route key ("METHOD /path"), set by `NanobarAPIController.handle()` at controller
 #: entry and reset at exit — `nanobar_api.orm.NanobarORMWrapper`'s SQLAlchemy event listeners
 #: read this to stamp a `route_key` on `orm-request-response` captures, the same correlation key
 #: `nanobar_api.bricks.binding` already uses for validator/controller layers. Named
@@ -335,7 +335,7 @@ class SQLiteTraceCaptureToggle:
     `EventBusTraceMiddleware`'s own docstring). A single-row table, own schema/file-independent
     (pass whichever SQLite file your app already treats as durable config storage), same
     "own `connect()`, fresh connection per call" shape as `nanobar_api.admin_auth.connect`/
-    `nanobar_api.bricks.store.connect`.
+    `nanobar_api.eventbus.store.connect`.
 
     `default_enabled` only takes effect the first time this table is created for a given
     database file -- a later construction against an already-seeded file (a second worker

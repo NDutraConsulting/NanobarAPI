@@ -1,14 +1,14 @@
-"""SQLAlchemy ORM models for the blog domain -- the first real `NanobarRepository`/
+"""SQLAlchemy ORM models for the blog domain -- the first real `NanobarAPIRepository`/
 `NanobarORMWrapper` consumer in this codebase (both have sat unused since the Service-Domain
-build; `NanobarRepository.__init__` has always required a real SQLAlchemy `Session`, and nothing
+build; `NanobarAPIRepository.__init__` has always required a real SQLAlchemy `Session`, and nothing
 until now ever constructed one). `Post`/`Appointment`/`Notification` are plain SQLAlchemy
 declarative models.
 
-**`Post` has a companion `NanobarModel` subclass (`PostStateFields`) declaring its
+**`Post` has a companion `NanobarAPIModel` subclass (`PostStateFields`) declaring its
 state-machine-governed field and idempotency contract, consulted by the service layer at the
 point of a transition -- not mixed directly into the ORM row.** Found via live verification, not
-assumed: `NanobarModel(ABC)` uses `abc.ABCMeta`, which conflicts with SQLAlchemy's
-`DeclarativeBase` metaclass (`class Post(Base, NanobarModel)` raises `TypeError: metaclass
+assumed: `NanobarAPIModel(ABC)` uses `abc.ABCMeta`, which conflicts with SQLAlchemy's
+`DeclarativeBase` metaclass (`class Post(Base, NanobarAPIModel)` raises `TypeError: metaclass
 conflict` immediately). Composition, not inheritance, is the only way to use both on one entity.
 """
 
@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from nanobar_api.models import NanobarModel
+from nanobar_api.framework.nanobar_api_model import NanobarAPIModel
 
 
 class Base(DeclarativeBase):
@@ -50,9 +50,9 @@ class Post(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
-class PostStateFields(NanobarModel):
+class PostStateFields(NanobarAPIModel):
     """Declares `Post.status`'s valid transitions (`draft -> scheduled -> published`, any
-    declared state to any other per `NanobarModel`'s own flat-graph limitation) and its
+    declared state to any other per `NanobarAPIModel`'s own flat-graph limitation) and its
     idempotency contract -- consulted by `PostService.schedule_post()`/`publish_post()`, not
     mixed into the ORM row (see module docstring)."""
 

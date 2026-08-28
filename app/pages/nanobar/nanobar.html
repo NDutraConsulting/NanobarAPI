@@ -50,6 +50,10 @@
               <input type="text" id="edit-domain" name="domain" />
             </label>
             <label class="edit-field">
+              <span class="edit-field-label">AppBox</span>
+              <input type="text" id="edit-app-box" name="app_box" />
+            </label>
+            <label class="edit-field">
               <span class="edit-field-label">Criticality (0.0&ndash;1.0)</span>
               <input type="number" id="edit-criticality" name="criticality" min="0" max="1" step="0.05" />
             </label>
@@ -193,13 +197,17 @@
 
               <div id="tab-run-panel" class="brick-tab-panel" role="tabpanel" hidden>
                 <p class="run-intro">
-                  Replays this brick's captured request against a shadow app instance (its own database for
-                  anything the request would write to -- your real local data is never touched), then compares
-                  the fresh response to what was originally captured.
+                  Replays this brick's captured request against this same running app (a
+                  <code>nanobar-mode: shadow</code> header routes anything it would write to a disposable
+                  replica -- your real local data is never touched), then compares the fresh response to
+                  what was originally captured.
                 </p>
                 <div class="run-actions">
                   <button type="button" id="run-btn" class="run-btn">Run</button>
                   <button type="button" id="refresh-btn" class="refresh-btn" disabled>Refresh</button>
+                </div>
+                <div id="run-progress" class="run-progress" hidden aria-hidden="true">
+                  <div class="run-progress-bar"></div>
                 </div>
                 <p id="run-status" class="run-status" hidden></p>
                 <div id="run-verdict" class="run-verdict" hidden></div>
@@ -238,9 +246,14 @@
 
   <template id="run-span-row-template">
     <li class="run-span-row">
-      <span class="run-span-name"></span>
-      <span class="run-span-nanobar-type" hidden></span>
-      <span class="run-span-status"></span>
+      <details class="run-span-details">
+        <summary class="run-span-summary">
+          <span class="run-span-name"></span>
+          <span class="run-span-nanobar-type" hidden></span>
+          <span class="run-span-status"></span>
+        </summary>
+        <pre class="run-span-payload json-block"></pre>
+      </details>
     </li>
   </template>
 

@@ -93,6 +93,35 @@ class NanobarEventBus:
         )
         self._repository.put(channel, event)
 
+    def dispatch_now(self, channel: str, payload: dict[str, Any]) -> Event:
+        """Synchronous, immediate dispatch -- builds an `Event` and calls `self._dispatch(event)`
+        directly, in the caller's own thread, bypassing the queue and `run_forever()`'s
+        background loop entirely.
+
+        Built for regression-brick replay of `event-to-subscriber`-typed bricks
+        (`nanobar_api/regression_brick/replay_routes.py`), not replay-specific itself -- any
+        caller wanting deterministic, synchronous dispatch (e.g. a test) can use it. The reason
+        it matters for replay: `publish()` + `run_forever()` dispatches *later*, in a separate
+        background thread where `current_trace_id`/`current_span_id` are unset, so the resulting
+        `event-to-subscriber` `capture_layer()` span would carry no useful trace correlation.
+        Running `_dispatch()` synchronously, in the caller's own context, means an ambient
+        `current_trace_id`/`current_span_id` (e.g. set by `EventBusTraceMiddleware` for the HTTP
+        request that's calling this) is exactly what `capture_layer()`/`self._telemetry.span()`
+        pick up for the resulting span -- real trace correlation, no extra plumbing.
+        """
+        _check_domain_channel(channel)
+        event = Event(
+            event_id=str(uuid.uuid4()),
+            channel=channel,
+            recorded_at_ns=time.time_ns(),
+            monotonic_ns=time.monotonic_ns(),
+            payload=payload,
+            trace_id=current_trace_id.get(),
+            span_id=current_span_id.get(),
+        )
+        self._dispatch(event)
+        return event
+
     def stop(self) -> None:
         self._stop_event.set()
 
@@ -144,7 +173,13 @@ class NanobarEventBus:
         for callback in self._subscribers.get(event.channel, []):
             try:
                 with self._telemetry.span(
-                    f"event-callback.{event.channel}", nanobar=NanobarProps(type="event-to-subscriber")
+                    f"event-callback.{event.channel}",
+                    # app_box="workers" unconditionally -- every event-to-subscriber callback
+                    # runs off an HTTP request, on this bus's own background dispatch thread, by
+                    # construction (see `.focusari/appbox-plan-with-tasks.md`'s "workers" box).
+                    # Fully generic to stamp here, not app-specific -- no per-callback tagging
+                    # needed (`AppointmentNotificationCallback` and any future subscriber alike).
+                    nanobar=NanobarProps(type="event-to-subscriber", app_box="workers"),
                 ):
                     result = callback.handle(event)
             except Exception as exc:

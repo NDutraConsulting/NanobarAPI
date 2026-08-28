@@ -38,10 +38,10 @@ export function fetchCoverageGaps(nanobarId) {
 
 /**
  * PATCH /admin/nanobar/api/nanobars/{nanobar_id} — partial update of the human-navigation fields
- * (label, scenario_description, component_source_description, domain, criticality). Any
+ * (label, scenario_description, component_source_description, domain, app_box, criticality). Any
  * field omitted from `fields` keeps its current stored value.
  * @param {string} nanobarId
- * @param {{label?: string, scenario_description?: string, component_source_description?: string, domain?: string, criticality?: number}} fields
+ * @param {{label?: string, scenario_description?: string, component_source_description?: string, domain?: string, app_box?: string, criticality?: number}} fields
  */
 export function updateNanobar(nanobarId, fields) {
   return request(`${BASE_URL}/nanobars/${encodeURIComponent(nanobarId)}`, {

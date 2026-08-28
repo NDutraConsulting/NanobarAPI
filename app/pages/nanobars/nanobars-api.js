@@ -9,17 +9,18 @@ import { csrfHeader } from "../shared/csrf.js";
 const BASE_URL = "/admin/nanobar/api/nanobars";
 
 /**
- * GET /admin/nanobar/api/nanobars?nanobar_type=&domain=&q=&page=&page_size=
- * @param {{nanobarType?: string, domain?: string, q?: string, page?: number, pageSize?: number}} [options]
+ * GET /admin/nanobar/api/nanobars?nanobar_type=&domain=&app_box=&q=&page=&page_size=
+ * @param {{nanobarType?: string, domain?: string, appBox?: string, q?: string, page?: number, pageSize?: number}} [options]
  * @returns {Promise<{status: string, msg: string, result: {type: string, data: any}}>}
  */
-export async function fetchNanobars({ nanobarType = "", domain, q = "", page = 1, pageSize } = {}) {
+export async function fetchNanobars({ nanobarType = "", domain, appBox, q = "", page = 1, pageSize } = {}) {
   const params = new URLSearchParams();
   if (nanobarType) params.set("nanobar_type", nanobarType);
-  // domain's own "All domains" value is "" (no filter) same as the others, but a real,
-  // meaningful domain value can *also* be "" (a root-level, un-Mounted route) -- so this can't
+  // domain/appBox's own "All ..." value is "" (no filter) same as the others, but a real,
+  // meaningful value can *also* be "" (domain: a root-level, un-Mounted route) -- so this can't
   // use nanobarType's truthiness check, only "was a value passed in at all."
   if (domain !== undefined) params.set("domain", domain);
+  if (appBox !== undefined) params.set("app_box", appBox);
   if (q) params.set("q", q);
   params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));

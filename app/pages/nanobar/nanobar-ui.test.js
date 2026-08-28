@@ -35,6 +35,7 @@ test("readEditFormFields includes criticality when the field has a value", () =>
   byId("edit-scenario-description").value = "desc";
   byId("edit-component-source").value = "checkout.repository";
   byId("edit-domain").value = "checkout";
+  byId("edit-app-box").value = "api";
   byId("edit-criticality").value = "0.75";
 
   const fields = ui.readEditFormFields();
@@ -44,6 +45,7 @@ test("readEditFormFields includes criticality when the field has a value", () =>
     scenario_description: "desc",
     component_source_description: "checkout.repository",
     domain: "checkout",
+    app_box: "api",
     criticality: 0.75,
   });
 });
@@ -55,6 +57,7 @@ test("readEditFormFields omits criticality when the field is emptied, not sends 
   byId("edit-scenario-description").value = "";
   byId("edit-component-source").value = "";
   byId("edit-domain").value = "";
+  byId("edit-app-box").value = "";
   byId("edit-criticality").value = "";
 
   const fields = ui.readEditFormFields();
@@ -77,6 +80,14 @@ test("populateEditForm (via renderSummary) pre-fills criticality, defaulting to 
 
   ui.renderSummary("nb-1", { system_name: "checkout", criticality: null });
   assert.equal(byId("edit-criticality").value, "0.5");
+});
+
+test("populateEditForm (via renderSummary) pre-fills app_box, same as domain", () => {
+  ui.renderSummary("nb-1", { system_name: "checkout", app_box: "admin/app" });
+  assert.equal(byId("edit-app-box").value, "admin/app");
+
+  ui.renderSummary("nb-1", { system_name: "checkout", app_box: null });
+  assert.equal(byId("edit-app-box").value, "");
 });
 
 /* --------------------------------------------------------------- summary */
@@ -337,12 +348,7 @@ test("setRunBusy toggles the Run button's disabled state and label", () => {
 });
 
 test("resetRunTab clears any previous verdict/spans and disables Refresh", () => {
-  ui.renderVerdict({
-    overall_passed: true,
-    status_layer: { passed: true, detail: "ok" },
-    schema_layer: { passed: true, detail: "ok" },
-    pinned_field_layer: { passed: true, detail: "ok" },
-  });
+  ui.renderVerdict({ overall_passed: true, diffs: [] });
   assert.equal(byId("refresh-btn").disabled, false);
 
   ui.resetRunTab();
@@ -351,17 +357,32 @@ test("resetRunTab clears any previous verdict/spans and disables Refresh", () =>
   assert.equal(byId("refresh-btn").disabled, true);
 });
 
-test("renderVerdict shows pass/fail per layer and enables Refresh", () => {
+test("renderVerdict shows PASS with no diff list when overall_passed is true", () => {
+  ui.renderVerdict({ overall_passed: true, diffs: [] });
+
+  assert.equal(byId("run-verdict").hidden, false);
+  assert.equal(byId("run-verdict").classList.contains("run-verdict-pass"), true);
+  assert.match(byId("run-verdict").textContent, /PASS/);
+  assert.equal(byId("run-verdict").querySelector(".run-verdict-diffs"), null);
+  assert.equal(byId("refresh-btn").disabled, false);
+});
+
+test("renderVerdict shows FAIL and lists each diff line when overall_passed is false", () => {
   ui.renderVerdict({
     overall_passed: false,
-    status_layer: { passed: true, detail: "matched" },
-    schema_layer: { passed: false, detail: "mismatch" },
-    pinned_field_layer: { passed: false, detail: "skipped" },
+    diffs: [
+      "response.status_code: brick=200 replayed=404",
+      "response.payload.title: brick='Edited' replayed=None",
+    ],
   });
 
   assert.equal(byId("run-verdict").hidden, false);
   assert.equal(byId("run-verdict").classList.contains("run-verdict-fail"), true);
   assert.match(byId("run-verdict").textContent, /FAIL/);
+  const items = byId("run-verdict").querySelectorAll(".run-verdict-diff");
+  assert.equal(items.length, 2);
+  assert.equal(items[0].textContent, "response.status_code: brick=200 replayed=404");
+  assert.equal(items[1].textContent, "response.payload.title: brick='Edited' replayed=None");
   assert.equal(byId("refresh-btn").disabled, false);
 });
 
@@ -381,6 +402,55 @@ test("renderRunSpans hides the wrap for an empty span list", () => {
   ui.renderRunSpans([]);
 
   assert.equal(byId("run-spans-wrap").hidden, true);
+});
+
+test("renderRunSpans derives a name/status from a nameless snapshot-channel event instead of falling back to '(unnamed span)'/'—'", () => {
+  ui.renderRunSpans([
+    {
+      payload: {
+        request: { method: "POST", path: "/admin/app/api/posts/{post_id}" },
+        response: { title: "Edited" },
+        nanobar_type: "validator-request-response",
+        error: false,
+      },
+    },
+    {
+      payload: {
+        request: { statement: "SELECT posts.id FROM posts   WHERE posts.id = ?" },
+        response: { rowcount: -1 },
+        nanobar_type: "orm-request-response",
+        error: false,
+      },
+    },
+    { payload: { nanobar_type: "service-request-response", error: true } },
+  ]);
+
+  const rows = byId("run-spans-list").querySelectorAll(".run-span-row");
+  assert.equal(rows[0].querySelector(".run-span-name").textContent, "POST /admin/app/api/posts/{post_id}");
+  assert.equal(rows[0].querySelector(".run-span-status").textContent, "ok");
+  assert.equal(rows[1].querySelector(".run-span-name").textContent, "SELECT posts.id FROM posts WHERE posts.id = ?");
+  assert.equal(rows[2].querySelector(".run-span-name").textContent, "service-request-response capture");
+  assert.equal(rows[2].querySelector(".run-span-status").textContent, "error");
+  assert.equal(rows[2].classList.contains("run-span-row-error"), true);
+});
+
+test("renderRunSpans truncates a long SQL statement in the name but keeps it in full in the expanded payload", () => {
+  const longStatement = `SELECT ${"x".repeat(100)} FROM posts`;
+  ui.renderRunSpans([{ payload: { request: { statement: longStatement }, nanobar_type: "orm-request-response" } }]);
+
+  const row = byId("run-spans-list").querySelector(".run-span-row");
+  const name = row.querySelector(".run-span-name").textContent;
+  assert.equal(name.length <= 71, true);
+  assert.equal(name.endsWith("…"), true);
+  assert.match(row.querySelector(".run-span-payload").textContent, new RegExp(longStatement));
+});
+
+test("renderRunSpans exposes each span's full raw payload as pretty-printed JSON for expansion", () => {
+  const payload = { name: "controller.POST /x", nanobar_type: "controller-request-response", status_code: 200 };
+  ui.renderRunSpans([{ payload }]);
+
+  const payloadEl = byId("run-spans-list").querySelector(".run-span-payload");
+  assert.equal(payloadEl.textContent, JSON.stringify(payload, null, 2));
 });
 
 /* ------------------------------------------------------------ page status */

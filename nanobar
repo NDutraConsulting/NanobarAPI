@@ -1,0 +1,163 @@
+#!/bin/sh -e
+
+# ./nanobar -- dev/reset/migrate wrapper for the Nanobar Dashboard demo app (app/), styled
+# after this project's own scripts/{test,lint,check,...} ("Scripts to Rule Them All"). Distinct
+# from the installed `nanobar` console script (nanobar_api/cli.py, dev/routes for *any* NanobarAPI
+# app) -- this one is specific to running/resetting *this repo's* demo app in app/, and adds the
+# reset/migrate operations that CLI doesn't have.
+#
+# Usage:
+#   ./nanobar dev [--port PORT]  run the demo app
+#   ./nanobar reset [-y|--yes]   delete every sqlite db under app/ and rebuild schemas
+#   ./nanobar migrate            create any missing tables on every existing db under app/ (see
+#                                 the big warning below -- this is NOT a real migration tool)
+#
+# No separate "shadow deployment" mode -- regression-brick replay runs in-process against this
+# same server (a `nanobar-mode: shadow` header routes its writes to a disposable replica; see
+# nanobar_api/shadow.py and app/db/blog_session.py's resolve_session_factory()), not a second
+# process on a second port the way an earlier version of this project required.
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./nanobar dev [--port PORT]
+  ./nanobar reset [-y|--yes]
+  ./nanobar migrate
+EOF
+}
+
+# Every sqlite db file this app's default (non-overridden) db-path resolvers can produce, found
+# by globbing app/ rather than hardcoding each resolver's own default path one by one -- this
+# project's own db.py-style resolvers all nest their files somewhere under app/ (see
+# app/admin/nanobar/db.py, app/admin/nanobar/events_db.py, app/admin/nanobar/telemetry_db.py,
+# app/admin/app/auth_db.py, app/admin/nanobar/auth_db.py, app/db/blog_session.py,
+# app/admin/nanobar/dynamic_taxonomy_db.py, app/admin/nanobar/shadow_deployment.py's shadow
+# sibling files), so globbing self-updates if one of those defaults ever moves, and also sweeps
+# up any stray/misplaced db file left over from an earlier layout. Excludes -journal (SQLite's
+# rollback-mode temp file; harmless to leave, but swept up too for a genuinely clean reset) along
+# with the WAL-mode -shm/-wal companions events.db/kahnban.db actually use.
+find_dbs() {
+    find app -type f \( -name '*.db' -o -name '*.db-shm' -o -name '*.db-wal' -o -name '*.db-journal' \) 2>/dev/null
+}
+
+# Builds the demo app in-process, which idempotently creates (never alters) every SQLAlchemy-
+# managed table (blog.db, regression_bricks.db, nanobar_api_telemetry.db, app_admin.db,
+# nanobar_admin.db -- see app/main.py's build_app()), then separately opens the two remaining
+# raw-sqlite3 databases build_app() never touches directly (events.db, nanobar_type_system.db --
+# each has its own connect()-creates-schema-idempotently helper) so every db this app can write
+# to ends up with a real schema, not just the ones build_app() happens to construct a session
+# factory for.
+ensure_schemas() {
+    uv run python -c "
+from app.main import build_app
+from app.admin.nanobar.events_db import get_connection as get_events_connection, resolve_db_path as resolve_events_db_path
+from app.admin.nanobar.dynamic_taxonomy_db import (
+    get_connection as get_type_system_connection,
+    resolve_db_path as resolve_type_system_db_path,
+)
+
+build_app()
+get_events_connection(resolve_events_db_path()).close()
+get_type_system_connection(resolve_type_system_db_path()).close()
+print('Schema ensured for every database.')
+"
+}
+
+cmd_dev() {
+    port=8000
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --port)
+                shift
+                port="$1"
+                ;;
+            --port=*)
+                port="${1#--port=}"
+                ;;
+            *)
+                echo "./nanobar dev: unrecognized argument: $1" >&2
+                usage >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    set -x
+    exec uv run nanobar dev server.py --port "$port"
+}
+
+cmd_reset() {
+    assume_yes=false
+    for arg in "$@"; do
+        case "$arg" in
+            -y | --yes) assume_yes=true ;;
+            *)
+                echo "./nanobar reset: unrecognized argument: $arg" >&2
+                usage >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    dbs=$(find_dbs)
+    if [ -z "$dbs" ]; then
+        echo "No db files found under app/ -- nothing to reset."
+    else
+        echo "This will permanently delete every local db file under app/:"
+        echo "$dbs" | sed 's/^/  /'
+        if [ "$assume_yes" != true ]; then
+            printf 'Proceed? [y/N] '
+            read -r reply
+            case "$reply" in
+                [yY] | [yY][eE][sS]) ;;
+                *)
+                    echo "Aborted -- no files deleted."
+                    exit 1
+                    ;;
+            esac
+        fi
+        echo "$dbs" | xargs rm -f
+        echo "Deleted $(echo "$dbs" | wc -l | tr -d ' ') file(s)."
+    fi
+
+    echo "Rebuilding schemas..."
+    ensure_schemas
+}
+
+cmd_migrate() {
+    # NOT a real migration tool -- this project has no migration system at all (see README.md's
+    # "Status" section: "no real users yet, so migrations for old data are deliberately skipped
+    # rather than built... don't point this at data or traffic you need to keep"). This command
+    # only calls SQLAlchemy's Base.metadata.create_all()/each raw-sqlite3 connect()'s own
+    # idempotent CREATE TABLE IF NOT EXISTS -- fine for a brand-new/empty db, or for adding a
+    # wholly new table to an existing db, but it CANNOT add a column to a table that already
+    # exists (e.g. a "no such column: nanobars.deleted_at" OperationalError against a db created
+    # before that column was added to the ORM model). If a db is showing that kind of error,
+    # `./nanobar reset` is the only real fix -- delete and let it get recreated fresh.
+    echo "Note: this only creates missing tables; it cannot alter an existing table's columns."
+    echo "If you're seeing a 'no such column' error, run './nanobar reset' instead."
+    ensure_schemas
+}
+
+if [ $# -eq 0 ]; then
+    usage >&2
+    exit 1
+fi
+
+subcommand="$1"
+shift
+
+case "$subcommand" in
+    dev) cmd_dev "$@" ;;
+    reset) cmd_reset "$@" ;;
+    migrate) cmd_migrate "$@" ;;
+    -h | --help)
+        usage
+        ;;
+    *)
+        echo "./nanobar: unknown subcommand: $subcommand" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
