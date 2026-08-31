@@ -73,7 +73,7 @@ nanobar_api/                  # repo root
 │   ├── admin/
 │   │   ├── nanobar/                 # the regression-brick/observability admin dashboard
 │   │   └── app/                      # a small blog/booking admin -- the worked pipeline example
-│   ├── validators/ controllers/ services/ crud/ models/ libraries/ db/
+│   ├── validators/ controllers/ services/ repositories / models/ libraries/ db/
 │   │                               # the blog domain's own layers (one blog_*.py file per layer)
 │   ├── api/routes/                 # public-facing route registrations
 │   ├── pages/                      # static per-page HTML/CSS/JS bundles (no server-rendered HTML)
@@ -91,19 +91,19 @@ nanobar_api/                  # repo root
 
 ## Core concepts: Nanobars, RegressionBricks, and traces
 
-Three distinct things, related in one direction — a Nanobar is a *class*, a RegressionBrick is
-one *member* of that class, and a trace/span is the raw *telemetry evidence* a brick was built
+Three distinct things, related in one direction — a Nanobar is a _class_, a RegressionBrick is
+one _member_ of that class, and a trace/span is the raw _telemetry evidence_ a brick was built
 from.
 
 - **A Nanobar is a class of tests, not an individual scenario** — the stable identity of one
   component's input/output boundary (e.g. "`POST /orders`'s controller boundary"). Its identity
   is `(nanobar_type, monitor_target)` — `nanobar_type` (`api-response`, `controller-to-db`,
-  `service-response`, `worker-{channel}`, ...) says *what kind* of boundary crossing this is;
-  `monitor_target_refs` says *which real route/service/controller* it's anchored to.
+  `service-response`, `worker-{channel}`, ...) says _what kind_ of boundary crossing this is;
+  `monitor_target_refs` says _which real route/service/controller_ it's anchored to.
 - **A RegressionBrick is one immutable, versioned example of that class** — an actual captured
   request/response pair. A single Nanobar accumulates many bricks over time: one shaped like a
-  success response, one like a 404, one like a validation error — all the same *class* of test,
-  each a different *test object*. Bricks are never edited in place; a later replay that produces
+  success response, one like a 404, one like a validation error — all the same _class_ of test,
+  each a different _test object_. Bricks are never edited in place; a later replay that produces
   new evidence forks a new brick (`forked_from_regression_brick_id`) instead. Deduped by
   content-hash, so capturing the same request+response twice never creates a duplicate.
 - **`nanobar_regression_bricks`** is the join table recording how bricks bind to nanobars
@@ -149,8 +149,8 @@ from.
    Tagging doesn't write a database row synchronously — it just puts a request/response payload
    onto the eventbus's `"snapshot"` channel, carrying that span's `trace_id`/`span_id` along
    with it.
-3. **`generate_bricks()`** (`nanobar_api/bricks/generate.py`) is a deliberately *explicit batch
-   step* — not a continuous worker — that reads unprocessed `"snapshot"`-channel events and
+3. **`generate_bricks()`** (`nanobar_api/bricks/generate.py`) is a deliberately _explicit batch
+   step_ — not a continuous worker — that reads unprocessed `"snapshot"`-channel events and
    turns each into a `RegressionBrick`, whose `trace_refs: [{trace_id, span_ids}]` field points
    straight back at the span that produced it. Explicit and human-reviewable on purpose:
    continuous re-inference would just bless whatever the app currently does, bugs included (the
@@ -260,7 +260,7 @@ route -> NanobarAPIValidatorGate -> NanobarAPIController (orchestrates services)
   service.
 - **`NanobarAPIService`** (`nanobar_api/framework/nanobar_api_service.py`) — implement
   `handle(request) -> ServiceResult` (`{status: "success"|"error"|"timeout", result: {type,
-  data, msg_summary}}`). **Services never call other services or controllers** —
+data, msg_summary}}`). **Services never call other services or controllers** —
   cross-service coordination belongs in the controller.
 - **`NanobarAPIRepository`** (`nanobar_api/framework/nanobar_api_repository.py`) — a thin
   SQLAlchemy `Session` wrapper with optional caching; owns persistence, not business logic.
@@ -301,7 +301,7 @@ Then open `http://127.0.0.1:8001/admin/nanobar/login` (seeded credentials
    a disposable replica instead, configurable including a genuine remote database via
    `nanobar_api.bricks.shadow_profile.ShadowPersistenceProfile`'s `connection_secret_ref`-style
    env vars (`NANOBAR_BLOG_SHADOW_DB`). Produces a **Verdict**: does the replayed response still
-   match what was originally captured? This *is* the regression check — "does this endpoint
+   match what was originally captured? This _is_ the regression check — "does this endpoint
    still behave the way this evidence says it should," re-run on demand against current code.
 6. **Traces** (`/admin/nanobar/traces`) — browse raw trace/span evidence directly, independent
    of whether it's been turned into a brick yet.
