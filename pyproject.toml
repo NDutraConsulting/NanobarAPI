@@ -49,15 +49,7 @@ dev = [
     # over httpx now; see .focusari/nanobarapi-beta-with-starlette-build-plan-and-tasks.md
     # §5.3) -- now a direct main dependency (see [project] dependencies above), pulled in
     # transitively via "NanobarAPI[serve]" above, so no separate pin is needed here anymore.
-    # Demo/seed-script only: focusari_kahnban is a real, already-tested app (built on
-    # focusari_asgi, not this project's Starlette base) used purely as a realistic traffic
-    # source for the regression-brick capture pipeline. Not a runtime dependency of nanobar_api
-    # — ASGI middleware composition doesn't care which framework produced the wrapped app.
-    "focusari-kahnban",
 ]
-
-[tool.uv.sources]
-focusari-kahnban = { path = "../focusari_kahnban", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["nanobar_api"]

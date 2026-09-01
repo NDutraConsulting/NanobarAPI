@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from app.core.config import WEB_DIR
-from app.crud.blog_crud import NotificationRepository, PostRepository
+from app.repositories.blog_repository import NotificationRepository, PostRepository
 from app.db.blog_session import resolve_session_factory as resolve_blog_session_factory
 from app.libraries.blog_serializer import notification_to_dict, post_to_dict
 from app.validators.blog_validator_gateway import CreatePostGate, MarkNotificationReadGate, UpdatePostGate
@@ -93,23 +93,27 @@ def build_mount(*, backend: SessionBackend) -> Mount:
             Route("/api/posts", _list_posts, methods=["GET"]),
             Route(
                 "/api/posts",
-                adapt_handler(_gate_endpoint(CreatePostGate, "POST /admin/app/api/posts")),
+                adapt_handler(_gate_endpoint(CreatePostGate,
+                              "POST /admin/app/api/posts")),
                 methods=["POST"],
             ),
             Route("/api/posts/{post_id}", _get_post, methods=["GET"]),
             Route(
                 "/api/posts/{post_id}",
-                adapt_handler(_gate_endpoint(UpdatePostGate, "POST /admin/app/api/posts/{post_id}")),
+                adapt_handler(_gate_endpoint(UpdatePostGate,
+                              "POST /admin/app/api/posts/{post_id}")),
                 methods=["POST"],
             ),
             Route("/api/notifications", _list_notifications, methods=["GET"]),
             Route(
                 "/api/notifications/{notification_id}/read",
                 adapt_handler(
-                    _gate_endpoint(MarkNotificationReadGate, "POST /admin/app/api/notifications/{notification_id}/read")
+                    _gate_endpoint(
+                        MarkNotificationReadGate, "POST /admin/app/api/notifications/{notification_id}/read")
                 ),
                 methods=["POST"],
             ),
         ],
-        middleware=list(session_protected(backend=backend, login_url="/admin/app/login", cookie_path="/admin/app")),
+        middleware=list(session_protected(
+            backend=backend, login_url="/admin/app/login", cookie_path="/admin/app")),
     )

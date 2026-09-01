@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.crud.blog_crud import AppointmentRepository, NotificationRepository, PostRepository
+from app.repositories.blog_repository import AppointmentRepository, NotificationRepository, PostRepository
 from app.db.blog_session import resolve_session_factory as resolve_blog_session_factory
 from app.services.blog_service import (
     BookAppointmentService,
@@ -56,13 +56,15 @@ class CreatePostController(NanobarAPIController):
     def load_required_services(self) -> None:
         session = resolve_blog_session_factory(self.request)()
         self.services["session"] = session
-        self.services["post_service"] = CreatePostService(self.request.app.state.telemetry, PostRepository(session))
+        self.services["post_service"] = CreatePostService(
+            self.request.app.state.telemetry, PostRepository(session))
 
     def load_fallback_services(self) -> None:
         pass
 
     def run_etl_workflow(self, validated: Any) -> Any:
-        result = self.services["post_service"](validated, route_key=self.request_type)
+        result = self.services["post_service"](
+            validated, route_key=self.request_type)
         self.services["session"].close()
         return result
 
@@ -77,13 +79,15 @@ class UpdatePostController(NanobarAPIController):
     def load_required_services(self) -> None:
         session = resolve_blog_session_factory(self.request)()
         self.services["session"] = session
-        self.services["post_service"] = UpdatePostService(self.request.app.state.telemetry, PostRepository(session))
+        self.services["post_service"] = UpdatePostService(
+            self.request.app.state.telemetry, PostRepository(session))
 
     def load_fallback_services(self) -> None:
         pass
 
     def run_etl_workflow(self, validated: Any) -> Any:
-        result = self.services["post_service"](validated, route_key=self.request_type)
+        result = self.services["post_service"](
+            validated, route_key=self.request_type)
         self.services["session"].close()
         return result
 
@@ -98,14 +102,16 @@ class BookAppointmentController(NanobarAPIController):
         session = resolve_blog_session_factory(self.request)()
         self.services["session"] = session
         self.services["appointment_service"] = BookAppointmentService(
-            self.request.app.state.telemetry, AppointmentRepository(session), self.request.app.state.event_bus
+            self.request.app.state.telemetry, AppointmentRepository(
+                session), self.request.app.state.event_bus
         )
 
     def load_fallback_services(self) -> None:
         pass
 
     def run_etl_workflow(self, validated: Any) -> Any:
-        result = self.services["appointment_service"](validated, route_key=self.request_type)
+        result = self.services["appointment_service"](
+            validated, route_key=self.request_type)
         self.services["session"].close()
         return result
 
@@ -125,7 +131,8 @@ class MarkNotificationReadController(NanobarAPIController):
         pass
 
     def run_etl_workflow(self, validated: Any) -> Any:
-        result = self.services["notification_service"](validated, route_key=self.request_type)
+        result = self.services["notification_service"](
+            validated, route_key=self.request_type)
         self.services["session"].close()
         return result
 

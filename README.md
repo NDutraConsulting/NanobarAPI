@@ -5,6 +5,26 @@
 > path (see "No users yet" precedent throughout `.focusari/`'s build plans). No users, no
 > guarantees, no support. Do not deploy this to serve real traffic or store data you care about.
 
+## Quickstart
+
+```shell
+$ uv sync
+$ ./nanobar dev
+```
+
+- **Read the blog** — http://127.0.0.1:8000/
+- **Add a blog post** — http://127.0.0.1:8000/admin/app/dashboard (login at
+  `/admin/app/login`, seeded credentials `admin`/`changeme123`). Fill in the "new post" form and
+  click **Save post**.
+- **Generate a regression brick** — http://127.0.0.1:8000/admin/nanobar/dashboard (login at
+  `/admin/nanobar/login`, same seeded credentials). After some traffic (e.g. the post you just
+  added), click **Generate bricks** on the nanobars list or Settings page — see "Regression
+  testing with the nanobar dashboard" below for the full workflow.
+- **Run a brick** — open a nanobar's detail page with `#brick-{brick_id}` in the URL (e.g.
+  `http://127.0.0.1:8000/admin/nanobar/nanobars/{nanobar_id}#brick-{brick_id}`, using the actual
+  IDs shown on the nanobars list) to jump straight to that brick, then use its **Run** tab to
+  replay it and see the verdict.
+
 An opinionated ASGI API framework wrapping [Starlette](https://github.com/encode/starlette) —
 the same relationship FastAPI has to Starlette, but with its own architecture (stdlib
 `dataclasses` for validation instead of Pydantic, no `Depends()`-style dependency injection, and

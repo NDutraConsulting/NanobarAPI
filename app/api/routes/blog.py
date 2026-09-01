@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from app.core.config import WEB_DIR
-from app.crud.blog_crud import PostRepository
+from app.repositories.blog_repository import PostRepository
 from app.db.blog_session import resolve_session_factory as resolve_blog_session_factory
 from app.libraries.blog_serializer import post_to_dict
 from app.validators.blog_validator_gateway import BookAppointmentGate
@@ -74,7 +74,8 @@ def build_routes() -> list[Route]:
         Route("/api/posts/{post_id}", _get_post, methods=["GET"]),
         Route(
             "/book-appointment",
-            adapt_handler(_gate_endpoint(BookAppointmentGate, "POST /book-appointment")),
+            adapt_handler(_gate_endpoint(
+                BookAppointmentGate, "POST /book-appointment")),
             methods=["POST"],
         ),
     ]

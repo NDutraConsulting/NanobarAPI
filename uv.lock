@@ -188,73 +188,6 @@ wheels = [
 ]
 
 [[package]]
-name = "focusari-kahnban"
-version = "0.1.0"
-source = { editable = "../focusari_kahnban" }
-dependencies = [
-    { name = "focusariasgi" },
-    { name = "sqlalchemy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "focusariasgi", editable = "../focusari_asgi" },
-    { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },
-]
-provides-extras = ["serve"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage", specifier = ">=7.8.2" },
-    { name = "focusari-kahnban", extras = ["serve"] },
-    { name = "httpx2", specifier = ">=2.0.0" },
-    { name = "mypy", specifier = "==2.1.0" },
-    { name = "pytest", specifier = "==9.1.1" },
-    { name = "ruff", specifier = "==0.16.0" },
-]
-
-[[package]]
-name = "focusariasgi"
-source = { editable = "../focusari_asgi" }
-dependencies = [
-    { name = "anyio" },
-    { name = "opentelemetry-api" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyio", specifier = ">=3.6.2,<5" },
-    { name = "httpx2", marker = "extra == 'full'", specifier = ">=2.0.0" },
-    { name = "jinja2", marker = "extra == 'full'" },
-    { name = "opentelemetry-api" },
-    { name = "python-multipart", marker = "extra == 'full'", specifier = ">=0.0.18" },
-]
-provides-extras = ["full"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage", specifier = ">=7.8.2" },
-    { name = "focusariasgi", extras = ["full"] },
-    { name = "httpx2", extras = ["zstd"], specifier = ">=2.0.0" },
-    { name = "importlib-metadata", specifier = "==9.0.0" },
-    { name = "mypy", specifier = "==2.1.0" },
-    { name = "opentelemetry-sdk", specifier = "==1.44.0" },
-    { name = "pytest", specifier = "==9.1.1" },
-    { name = "pytest-codspeed", specifier = ">=4.1.1" },
-    { name = "ruff", specifier = "==0.16.0" },
-    { name = "sniffio" },
-    { name = "trio", specifier = "==0.33.0" },
-    { name = "twine", specifier = "==7.0.0" },
-]
-docs = [
-    { name = "black", specifier = "==26.5.1" },
-    { name = "mkdocstrings", specifier = ">=1.0.2" },
-    { name = "mkdocstrings-python", specifier = ">=2.0.1" },
-    { name = "zensical", specifier = ">=0.0.19" },
-]
-
-[[package]]
 name = "greenlet"
 version = "3.5.5"
 source = { registry = "https://pypi.org/simple" }
@@ -519,7 +452,6 @@ serve = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
-    { name = "focusari-kahnban" },
     { name = "mypy" },
     { name = "nanobarapi", extra = ["serve"] },
     { name = "pytest" },
@@ -541,7 +473,6 @@ provides-extras = ["serve"]
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.8.2" },
-    { name = "focusari-kahnban", editable = "../focusari_kahnban" },
     { name = "mypy", specifier = "==2.1.0" },
     { name = "nanobarapi", extras = ["serve"] },
     { name = "pytest", specifier = "==9.1.1" },

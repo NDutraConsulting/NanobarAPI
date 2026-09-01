@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.crud.blog_crud import PostRepository
+from app.repositories.blog_repository import PostRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -75,7 +75,8 @@ def seed_post_for_update(brick: RegressionBrick, session_factory: sessionmaker[S
     `evaluate_verdict()`'s own `DEFAULT_VOLATILE_FIELDS` (masked in the diff), so a seeded row's
     fresh `created_at` never causes a spurious mismatch either.
     """
-    post_id = brick.request.get("post_id") if isinstance(brick.request, dict) else None
+    post_id = brick.request.get("post_id") if isinstance(
+        brick.request, dict) else None
     if not isinstance(post_id, str):
         return None
 
@@ -84,7 +85,8 @@ def seed_post_for_update(brick: RegressionBrick, session_factory: sessionmaker[S
         repository = PostRepository(session)
         if repository.get(post_id) is not None:
             return None  # already present -- not ours to clean up
-        repository.seed(id=post_id, title="(seeded for replay)", body="(seeded for replay)")
+        repository.seed(id=post_id, title="(seeded for replay)",
+                        body="(seeded for replay)")
     finally:
         session.close()
 

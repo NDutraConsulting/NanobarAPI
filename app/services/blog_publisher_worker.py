@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.crud.blog_crud import PostRepository
+from app.repositories.blog_repository import PostRepository
 from nanobar_api.telemetry import NanobarProps, NanobarTelemetry
 
 
@@ -75,7 +75,8 @@ class PostPublisherThread:
             repository = PostRepository(session)
             due = repository.list_due_for_publish(now=datetime.now(UTC))
             for post in due:
-                repository.update_status(post.id, status="published", published_at=datetime.now(UTC))
+                repository.update_status(
+                    post.id, status="published", published_at=datetime.now(UTC))
             return len(due)
         finally:
             session.close()

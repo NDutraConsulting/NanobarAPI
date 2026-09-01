@@ -108,7 +108,7 @@ def build_app(
 
     `blog_db_path` is the blog domain's SQLite database (posts/appointments/notifications),
     accessed through real SQLAlchemy ORM models (`app.models.blog_model`) via
-    `NanobarAPIRepository` (`app.crud.blog_crud`) — this domain's first real usage
+    `NanobarAPIRepository` (`app.repositories.blog_repository`) — this domain's first real usage
     anywhere in the codebase. When omitted, resolved from `NANOBAR_BLOG_DB` (falling back to
     `app/db/blog.db`) — see `app.db.blog_session.resolve_db_path`.
 
@@ -168,23 +168,29 @@ def build_app(
     # this env var -- the OTel tracer provider it configures is a process-wide global that can
     # only ever move from no-op to real, never back, so it can't be the real toggle.
     configure_tracing(enabled=True)
-    trace_capture_toggle = SQLiteTraceCaptureToggle(resolved_nanobar_admin_db_path, default_enabled=True)
+    trace_capture_toggle = SQLiteTraceCaptureToggle(
+        resolved_nanobar_admin_db_path, default_enabled=True)
     refresh_log = SQLiteRefreshLog(resolved_nanobar_admin_db_path)
 
     repository = EventQueueRepository(
-        [ChannelConfig(name="trace"), ChannelConfig(name="snapshot"), ChannelConfig(name="domain.appointments")]
+        [ChannelConfig(name="trace"), ChannelConfig(
+            name="snapshot"), ChannelConfig(name="domain.appointments")]
     )
     telemetry = NanobarTelemetry(repository, channel="trace")
 
     # Two fully independent admin surfaces -- two SessionBackends, two SQLiteAdminUserStores,
     # each in its own database. Logging into one never authenticates, or otherwise disturbs, a
     # session on the other.
-    app_admin_session_backend = SQLiteSessionBackend(resolved_app_admin_db_path)
+    app_admin_session_backend = SQLiteSessionBackend(
+        resolved_app_admin_db_path)
     app_admin_user_store = SQLiteAdminUserStore(resolved_app_admin_db_path)
-    nanobar_admin_session_backend = SQLiteSessionBackend(resolved_nanobar_admin_db_path)
-    nanobar_admin_user_store = SQLiteAdminUserStore(resolved_nanobar_admin_db_path)
+    nanobar_admin_session_backend = SQLiteSessionBackend(
+        resolved_nanobar_admin_db_path)
+    nanobar_admin_user_store = SQLiteAdminUserStore(
+        resolved_nanobar_admin_db_path)
 
-    blog_session_factory = build_blog_session_factory(resolved_blog_db_path, repository=repository)
+    blog_session_factory = build_blog_session_factory(
+        resolved_blog_db_path, repository=repository)
     # The shadow-mode counterpart `resolve_session_factory()` (app/db/blog_session.py) picks
     # between at request time, keyed on the `nanobar-mode: shadow` header
     # (`nanobar_api.shadow`) -- a disposable replica so a regression-brick replay's own writes
@@ -194,16 +200,20 @@ def build_app(
     # already used (`resolve_shadow_connection`/`BLOG_SHADOW_PROFILE`) -- only how the two get
     # *selected* per request has changed, not where the shadow file lives or how it's overridden
     # (`NANOBAR_BLOG_SHADOW_DB`).
-    resolved_blog_shadow_db_path = resolve_shadow_connection(resolved_blog_db_path, profile=BLOG_SHADOW_PROFILE)
+    resolved_blog_shadow_db_path = resolve_shadow_connection(
+        resolved_blog_db_path, profile=BLOG_SHADOW_PROFILE)
     if "://" not in resolved_blog_shadow_db_path:
-        Path(resolved_blog_shadow_db_path).parent.mkdir(parents=True, exist_ok=True)
-    blog_shadow_session_factory = build_blog_session_factory(resolved_blog_shadow_db_path, repository=repository)
+        Path(resolved_blog_shadow_db_path).parent.mkdir(
+            parents=True, exist_ok=True)
+    blog_shadow_session_factory = build_blog_session_factory(
+        resolved_blog_shadow_db_path, repository=repository)
     # Recovers any shadow-db row a prior process's crash left seeded mid-replay (a synchronous
     # seed()/teardown() pair, app/db/blog_seeders.py, can't survive a hard kill between the two
     # calls) -- see shadow_seed_log.py's own module docstring for why a startup sweep, not a
     # background worker, is the right (and sufficient) place for this.
     sweep_stale_shadow_seeds(blog_shadow_session_factory)
-    post_publisher = PostPublisherThread(blog_session_factory, telemetry=telemetry)
+    post_publisher = PostPublisherThread(
+        blog_session_factory, telemetry=telemetry)
     # `resolve_db_path()` (app.admin.nanobar.db) only creates its own parent directory on the
     # "not overridden" branch -- an explicit `db_path=` argument (as tests pass) bypasses it
     # entirely, and unlike the old per-request `get_connection()` (which created the directory
@@ -211,21 +221,25 @@ def build_app(
     # app-build time. Confirmed live: without this, a not-yet-existing parent directory raised
     # `OperationalError: unable to open database file` on the very first request.
     Path(resolved_db_path).parent.mkdir(parents=True, exist_ok=True)
-    bricks_session_factory = build_bricks_session_factory(resolved_db_path, repository=repository)
+    bricks_session_factory = build_bricks_session_factory(
+        resolved_db_path, repository=repository)
     # Same "not-yet-existing parent directory" bug `bricks_session_factory` above already hit
     # once, applied preemptively here -- `nanobar_api.telemetry.persistence.build_session_factory`
     # opens its engine at app-build time too, not lazily on first request.
     Path(resolved_telemetry_db_path).parent.mkdir(parents=True, exist_ok=True)
-    telemetry_session_factory = build_telemetry_session_factory(resolved_telemetry_db_path)
+    telemetry_session_factory = build_telemetry_session_factory(
+        resolved_telemetry_db_path)
 
     domain_bus = NanobarEventBus(repository, telemetry)
-    domain_bus.subscribe("domain.appointments", AppointmentNotificationCallback(blog_session_factory))
+    domain_bus.subscribe("domain.appointments",
+                         AppointmentNotificationCallback(blog_session_factory))
 
     @asynccontextmanager
     async def lifespan(app: NanobarAPI) -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
-                telemetry_drain_worker_lifespan(["trace", "snapshot"], repository, telemetry_session_factory)
+                telemetry_drain_worker_lifespan(
+                    ["trace", "snapshot"], repository, telemetry_session_factory)
             )
             await stack.enter_async_context(event_bus_lifespan(domain_bus))
             await stack.enter_async_context(post_publisher_lifespan(post_publisher))
@@ -248,11 +262,13 @@ def build_app(
         # caught directly by NanobarAPIValidatorGate.__call__ and turned into a real 404
         # Response before they'd ever reach a Starlette-level exception handler.
         routes=[
-            *admin_app_login_routes.build_routes(backend=app_admin_session_backend, user_store=app_admin_user_store),
+            *admin_app_login_routes.build_routes(
+                backend=app_admin_session_backend, user_store=app_admin_user_store),
             *admin_nanobar_login_routes.build_routes(
                 backend=nanobar_admin_session_backend, user_store=nanobar_admin_user_store
             ),
-            admin_nanobar_routes.build_mount(backend=nanobar_admin_session_backend),
+            admin_nanobar_routes.build_mount(
+                backend=nanobar_admin_session_backend),
             admin_app_routes.build_mount(backend=app_admin_session_backend),
             *blog_public_routes.build_routes(),
             *build_replay_routes(),
@@ -291,5 +307,6 @@ def build_app(
     # bridge, bound to this same app -- no second process/port. See resolve_session_factory()'s
     # own docstring (app/db/blog_session.py) for how a replay dispatched through this actually
     # ends up isolated from live data (the `nanobar-mode: shadow` header, not this client).
-    app.state.replay_client = replay_client if replay_client is not None else TestClient(app)
+    app.state.replay_client = replay_client if replay_client is not None else TestClient(
+        app)
     return app

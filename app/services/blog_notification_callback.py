@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.crud.blog_crud import NotificationRepository
+from app.repositories.blog_repository import NotificationRepository
 from nanobar_api.eventbus.dispatch import NanobarCallback
 from nanobar_api.eventbus.events import Event
 

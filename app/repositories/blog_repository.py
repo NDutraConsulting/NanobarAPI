@@ -42,7 +42,8 @@ class PostRepository(NanobarAPIRepository):
 
     def list_published(self) -> list[Post]:
         return list(
-            self.session.query(Post).filter(Post.status == "published").order_by(Post.published_at.desc()).all()
+            self.session.query(Post).filter(Post.status == "published").order_by(
+                Post.published_at.desc()).all()
         )
 
     def get(self, post_id: str) -> Post | None:

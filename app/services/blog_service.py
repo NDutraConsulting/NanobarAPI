@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.crud.blog_crud import AppointmentRepository, NotificationRepository, PostRepository
+from app.repositories.blog_repository import AppointmentRepository, NotificationRepository, PostRepository
 from app.libraries.blog_serializer import appointment_to_dict, notification_to_dict, post_to_dict
 from app.models.blog_model import PostStateFields
 from nanobar_api.eventbus.dispatch import NanobarEventBus
@@ -37,16 +37,19 @@ class CreatePostService(NanobarAPIService):
     def handle(self, request: CreatePostRequest) -> ServiceResult:
         post = self.repository.create(title=request.title, body=request.body)
         if request.scheduled_at is not None:
-            state_machine = PostStateFields.state_machine_for("status", post.status)
+            state_machine = PostStateFields.state_machine_for(
+                "status", post.status)
             state_machine.transition_to("scheduled")
             updated = self.repository.update_status(
-                post.id, status=state_machine.state, scheduled_at=datetime.fromisoformat(request.scheduled_at)
+                post.id, status=state_machine.state, scheduled_at=datetime.fromisoformat(
+                    request.scheduled_at)
             )
             assert updated is not None
             post = updated
         return ServiceResult(
             status="success",
-            result=ServiceResultBody(type="object", data=post_to_dict(post), msg_summary="post created"),
+            result=ServiceResultBody(type="object", data=post_to_dict(
+                post), msg_summary="post created"),
         )
 
 
@@ -68,15 +71,18 @@ class UpdatePostService(NanobarAPIService):
         self.repository = repository
 
     def handle(self, request: UpdatePostRequest) -> ServiceResult:
-        post = self.repository.update_content(request.post_id, title=request.title, body=request.body)
+        post = self.repository.update_content(
+            request.post_id, title=request.title, body=request.body)
         if post is None:
             return ServiceResult(
                 status="error",
-                result=ServiceResultBody(type="object", data=None, msg_summary=f"post {request.post_id!r} not found"),
+                result=ServiceResultBody(
+                    type="object", data=None, msg_summary=f"post {request.post_id!r} not found"),
             )
         return ServiceResult(
             status="success",
-            result=ServiceResultBody(type="object", data=post_to_dict(post), msg_summary="post updated"),
+            result=ServiceResultBody(type="object", data=post_to_dict(
+                post), msg_summary="post updated"),
         )
 
 
@@ -101,7 +107,8 @@ class BookAppointmentService(NanobarAPIService):
         self.event_bus = event_bus
 
     def handle(self, request: BookAppointmentRequest) -> ServiceResult:
-        appointment = self.repository.create(name=request.name, email=request.email, note=request.note)
+        appointment = self.repository.create(
+            name=request.name, email=request.email, note=request.note)
         self.event_bus.publish(
             "domain.appointments",
             {
